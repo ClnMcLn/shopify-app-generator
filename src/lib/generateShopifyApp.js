@@ -281,41 +281,21 @@ console.log('Clicked: Confirm "Release"');
   await page.waitForLoadState("networkidle").catch(() => {});
   await page.waitForTimeout(1200);
 
-  // Verify by opening Versions list -> Active version
-  const versionsListUrl = `https://dev.shopify.com/dashboard/${dashboardId}/apps/${appId}/versions`;
-  await page.goto(versionsListUrl, { waitUntil: "domcontentloaded" });
-  await sleep(1200);
+// Verify release by confirming Version 2 is Active in the versions list
+const versionsListUrl = `https://dev.shopify.com/dashboard/${dashboardId}/apps/${appId}/versions`;
+await page.goto(versionsListUrl, { waitUntil: "domcontentloaded" });
+await page.waitForTimeout(1500);
 
-  const activeLink = page
-    .locator('a[href*="/versions/"]')
-    .filter({ hasText: /active/i })
-    .first();
+// Look for a row that contains "Version 2" AND "Active"
+const v2ActiveRow = page.locator('tr', { hasText: /version\s*2/i }).filter({ hasText: /active/i });
 
-  const firstVersionLink = page.locator('a[href*="/versions/"]').first();
+if (await v2ActiveRow.count() === 0) {
+  await safeScreenshot(page, "storage/verify-version-2-not-active.png");
+  throw new Error('Release verify failed: "Version 2" is not marked Active in the versions list.');
+}
 
-  if (await activeLink.count()) {
-    await activeLink.click({ force: true });
-  } else {
-    await firstVersionLink.click({ force: true });
-  }
-
-  await page.waitForLoadState("domcontentloaded");
-  await sleep(1200);
-
-  const activeAppUrl = await page
-    .locator("#version_app_module_data_app_home_app_url")
-    .inputValue()
-    .catch(() => "");
-
-  const activeScopes = await page
-    .locator("#version_app_module_data_app_access_app_scopes")
-    .inputValue()
-    .catch(() => "");
-
-  console.log("VERIFY (active version) app url:", (activeAppUrl || "").trim());
-  console.log("VERIFY (active version) scopes len:", (activeScopes || "").trim().length);
-
-  await safeScreenshot(page, "storage/verify-active-version.png");
+console.log('VERIFY: Version 2 is Active ✅');
+await safeScreenshot(page, "storage/verify-version-2-active.png");
 }
 
 async function selectCustomDistribution(distPage) {
