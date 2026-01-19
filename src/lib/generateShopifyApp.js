@@ -549,8 +549,8 @@ async function generateShopifyApp({ brand_name, store_domain }) {
 await page.waitForURL(/\/apps\/new\b/, { timeout: 30_000 });
 
 // Submit create form on /apps/new
-const submitCreate = page.locator('button[data-form-target="submit"][type="submit"]');
-await submitCreate.waitFor({ state: "visible", timeout: 120_000 });
+const submitCreate = page.locator('button[data-form-target="submit"][type="submit"]').first();
+await submitCreate.waitFor({ state: "attached", timeout: 120_000 });
 await submitCreate.scrollIntoViewIfNeeded();
 await submitCreate.click({ force: true });
 console.log('Clicked: Submit "Create"');
