@@ -315,20 +315,16 @@ async function selectCustomDistribution(distPage) {
     throw new Error(`Not on partners distribution page. URL: ${u}`);
   }
 
-  // 1) Wait for ANY anchor that indicates the distribution UI is present
-  const uiAnchor = distPage.locator(
-    [
-      'text=/distribution/i',
-      'text=/custom distribution/i',
-      'text=/select custom distribution/i',
-      'text=/generate link/i',
-      '#PolarisTextField1',
-      'button:has-text("Select")',
-      'button:has-text("Continue")',
-    ].join(",")
-  );
-
-  await uiAnchor.first().waitFor({ state: "visible", timeout: 90_000 });
+// 1) Wait for ANY anchor that indicates the distribution UI is present
+await Promise.race([
+  distPage.getByText(/distribution/i).first().waitFor({ state: "visible", timeout: 90_000 }),
+  distPage.getByText(/custom distribution/i).first().waitFor({ state: "visible", timeout: 90_000 }),
+  distPage.getByText(/select custom distribution/i).first().waitFor({ state: "visible", timeout: 90_000 }),
+  distPage.getByText(/generate link/i).first().waitFor({ state: "visible", timeout: 90_000 }),
+  distPage.locator("#PolarisTextField1").first().waitFor({ state: "visible", timeout: 90_000 }),
+  distPage.locator('button:has-text("Select")').first().waitFor({ state: "visible", timeout: 90_000 }),
+  distPage.locator('button:has-text("Continue")').first().waitFor({ state: "visible", timeout: 90_000 }),
+]);
   await safeScreenshot(distPage, "storage/distribution-ui-anchor-visible.png");
 
   // 2) If we already see the domain field / generate link, custom distribution is already selected
