@@ -43,15 +43,20 @@ app.post("/shopify/app-generator", async (req, res) => {
       store_domain,
     });
 
-    const result = await generateShopifyApp({ brand_name, store_domain });
+const result = await generateShopifyApp({ brand_name, store_domain });
 
-    console.log(`[${new Date().toISOString()}] generateShopifyApp success`, {
-      has_client_id: !!result?.client_id,
-      has_client_secret: !!result?.client_secret,
-      has_distribution_link: !!result?.distribution_link,
-    });
+console.log(`[${new Date().toISOString()}] generateShopifyApp success`, {
+  has_client_id: !!result?.client_id,
+  has_client_secret: !!result?.client_secret,
+  has_distribution_link: !!result?.distribution_link,
+});
 
-    return res.status(200).json(result);
+// “Envelope” makes Retool easier to bind to, while still returning the same top-level fields
+return res.status(200).json({
+  ok: true,
+  result,
+  ...result,
+});
   } catch (err) {
     console.error("generateShopifyApp error:", err);
     return res.status(500).json({
