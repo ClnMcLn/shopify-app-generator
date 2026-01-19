@@ -69,42 +69,15 @@ async function waitForAnyURL(page, patterns, timeout = 30_000) {
   );
 }
 
-async function pickAccountIfNeeded(page) {
+async function pickAccountIfNeeded(page, partnersDistributionUrl) {
   const url = page.url();
   if (!url.includes("accounts.shopify.com/select")) return;
 
-  console.log("On account chooser. Waiting for options...", { url });
+  console.log("On account chooser — skipping UI and going direct to distribution", { url });
   await safeScreenshot(page, "storage/account-chooser-arrived.png");
 
-  // Let the page actually render
-  await page.waitForLoadState("domcontentloaded").catch(() => {});
+  await page.goto(partnersDistributionUrl, { waitUntil: "domcontentloaded" });
   await page.waitForTimeout(1500);
-
-  // Try common “continue/select” buttons first
-  const continueBtn = page
-    .locator('button:has-text("Continue"), button:has-text("Select"), button:has-text("Choose")')
-    .filter({ hasNotText: /create/i })
-    .first();
-
-  if (await continueBtn.count()) {
-    await continueBtn.waitFor({ state: "visible", timeout: 90_000 });
-    await safeScreenshot(page, "storage/account-chooser-before-continue.png");
-    await continueBtn.click({ force: true });
-    console.log("Account chooser: clicked Continue/Select button");
-    await page.waitForLoadState("domcontentloaded").catch(() => {});
-    return;
-  }
-
-  // Fallback: click any meaningful link (often the chooser is just a list of links)
-  const anyRedirectLink = page
-    .locator('main a[href], a[href*="dev.shopify.com"], a[href*="partners.shopify.com"]')
-    .first();
-
-  await anyRedirectLink.waitFor({ state: "visible", timeout: 90_000 });
-  await safeScreenshot(page, "storage/account-chooser-before-link.png");
-  await anyRedirectLink.click({ force: true });
-  console.log("Account chooser: clicked first redirect link");
-  await page.waitForLoadState("domcontentloaded").catch(() => {});
 }
 
 async function scrapeClientIdAndSecret(settingsPage) {
@@ -522,11 +495,16 @@ export async function generateShopifyApp({ brand_name, store_domain }) {
     console.log("Distribution page ACTUAL URL:", distPage.url());
 
     // Account chooser bounce
-    if (distPage.url().includes("accounts.shopify.com/select")) {
-      await pickAccountIfNeeded(distPage);
-      await waitForAnyURL(distPage, [/partners\.shopify\.com\/\d+\/apps\/\d+\/distribution/], 30_000);
-      console.log("After choosing account, URL:", distPage.url());
-    }
+if (distPage.url().includes("accounts.shopify.com/select")) {
+  await pickAccountIfNeeded(distPage, distributionUrl);
+}
+
+await waitForAnyURL(
+  distPage,
+  [/partners\.shopify\.com\/\d+\/apps\/\d+\/distribution/],
+  60_000
+);
+console.log("Distribution page after chooser bypass:", distPage.url());
 
     await safeScreenshot(distPage, "storage/distribution-before.png");
 
