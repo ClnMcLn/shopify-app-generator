@@ -281,37 +281,84 @@ async function configureVersionAndRelease(page, { appId, dashboardId }) {
 
 // Distribution link generation is best-effort: it will not run if 2FA blocks access.
 async function selectCustomDistribution(distPage) {
-  // Guard: must be on partners
-  if (!distPage.url().includes("partners.shopify.com")) {
-    await safeScreenshot(distPage, "distribution-not-on-partners.png");
+  // Must be on partners distribution page
+  if (!distPage.url().includes("/distribution")) {
+    await safeScreenshot(distPage, "storage/not-on-distribution.png");
     throw new Error(`Not on partners distribution page. URL: ${distPage.url()}`);
   }
 
-  // Direct button
-  const selectCustomBtn = distPage.locator('button:has-text("Select custom distribution")').first();
-  if ((await selectCustomBtn.count()) > 0) {
-    await selectCustomBtn.waitFor({ timeout: 30_000 });
-    await selectCustomBtn.click({ force: true });
-    await sleep(800);
-    console.log('Clicked: "Select custom distribution" (direct)');
+  await distPage.waitForLoadState("domcontentloaded").catch(() => {});
+  await distPage.waitForTimeout(1500);
+  await safeScreenshot(distPage, "storage/distribution-start.png");
+
+  // 1) If the domain input already exists, we're already in the right place
+  const alreadyOnForm = distPage
+    .locator('input[placeholder*="myshopify" i], input[placeholder*="myshopify.com" i]')
+    .first();
+
+  if ((await alreadyOnForm.count()) > 0) {
+    console.log("Already on custom distribution form (domain input present).");
     return;
   }
 
-  // Card click fallback
-  const cardText = distPage.locator("text=/custom distribution/i").first();
-  await cardText.waitFor({ timeout: 30_000 });
-  await cardText.click({ force: true });
-  await sleep(500);
-
-  const selectBtn = distPage
-    .locator('button:has-text("Select")')
-    .filter({ hasNotText: "Select custom distribution" })
+  // 2) Click "Select custom distribution" (button or link)
+  const selectCustom = distPage
+    .locator('button:has-text("Select custom distribution"), a:has-text("Select custom distribution")')
     .first();
 
-  await selectBtn.waitFor({ timeout: 30_000 });
-  await selectBtn.click({ force: true });
-  await sleep(800);
-  console.log('Clicked: "Select" (after choosing custom distribution)');
+  if ((await selectCustom.count()) > 0) {
+    await selectCustom.waitFor({ state: "visible", timeout: 60_000 });
+    await selectCustom.click({ force: true });
+    console.log('Clicked: "Select custom distribution"');
+    await distPage.waitForTimeout(1500);
+  } else {
+    // 3) Sometimes it's a card titled "Custom distribution" with a generic Select button
+    const card = distPage.locator('text=/custom distribution/i').first();
+    if ((await card.count()) > 0) {
+      await card.click({ force: true });
+      console.log('Clicked: "Custom distribution" card/text');
+      await distPage.waitForTimeout(800);
+    }
+
+    const selectBtn = distPage
+      .locator('button:has-text("Select"), a:has-text("Select")')
+      .first();
+
+    await selectBtn.waitFor({ state: "visible", timeout: 60_000 });
+    await selectBtn.click({ force: true });
+    console.log('Clicked: "Select" (generic)');
+    await distPage.waitForTimeout(1500);
+  }
+
+  // 4) Handle possible confirmation modal (Select / Confirm)
+  const modal = distPage.locator('[role="dialog"], .Polaris-Modal-Dialog, .Polaris-Modal').first();
+  if ((await modal.count()) > 0) {
+    const confirm = modal
+      .locator('button:has-text("Select"), button:has-text("Confirm"), button:has-text("Continue")')
+      .first();
+
+    if ((await confirm.count()) > 0) {
+      await confirm.click({ force: true });
+      console.log("Confirmed selection in modal");
+      await distPage.waitForTimeout(1500);
+    }
+  }
+
+  await safeScreenshot(distPage, "storage/distribution-after-select-custom.png");
+
+  // 5) Final assert: domain input must now exist
+  const domainInput = distPage
+    .locator('input[placeholder*="myshopify" i], input[placeholder*="myshopify.com" i]')
+    .first();
+
+  if ((await domainInput.count()) === 0) {
+    await safeScreenshot(distPage, "storage/custom-distribution-form-not-found.png");
+    throw new Error(
+      `Custom distribution form still not visible (no domain input). URL: ${distPage.url()}`
+    );
+  }
+
+  console.log("Custom distribution form detected (domain input present).");
 }
 
 async function fillDomainAndGenerateLink(distPage, store_domain) {
