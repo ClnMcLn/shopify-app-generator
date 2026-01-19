@@ -543,6 +543,20 @@ async function generateShopifyApp({ brand_name, store_domain }) {
     await nameInput.fill("");
     await nameInput.type(appName, { delay: 20 });
 
+
+
+   // Submit create form (the SECOND "Create app" on the /apps/new page)
+   const submitCreate = page.locator('button:has-text("Create app")').last();
+   await submitCreate.waitFor({ timeout: 30_000 });
+   await submitCreate.click({ force: true });
+   console.log("Submitted: Create app");
+
+   // Success check = we landed on the new app detail page
+   await page.waitForURL(/\/apps\/\d+/, { timeout: 60_000 });
+   console.log("Created app detail URL:", page.url());
+
+   // ✅ then continue with your existing code that reads client_id/secret/link from the app page
+
     // Submit button (Shopify UI varies)
     const submitBtn = page
       .locator("button")
