@@ -315,8 +315,44 @@ async function selectCustomDistribution(distPage) {
 }
 
 async function fillDomainAndGenerateLink(distPage, store_domain) {
-  await distPage.waitForSelector("#PolarisTextField1", { timeout: 60_000 });
-  const domainInput = distPage.locator("#PolarisTextField1");
+// Must be on partners distribution page
+if (!distPage.url().includes("/distribution")) {
+  await safeScreenshot(distPage, "storage/not-on-distribution.png");
+  throw new Error(`Not on partners distribution page. URL: ${distPage.url()}`);
+}
+
+// Give the page a moment to render
+await distPage.waitForLoadState("domcontentloaded").catch(() => {});
+await distPage.waitForTimeout(1000);
+
+// Domain input selector (Shopify UI changes a lot) — try multiple strategies
+const domainCandidates = [
+  // Best: label-based (works if Shopify exposes it accessibly)
+  distPage.getByLabel(/shopify domain|store domain|domain/i).first(),
+
+  // Placeholder-based (common for myshopify.com inputs)
+  distPage.locator('input[placeholder*="myshopify" i], input[placeholder*="myshopify.com" i]').first(),
+
+  // Fallback: first visible text input in main content
+  distPage.locator('main input[type="text"], main input:not([type])').first(),
+];
+
+let domainInput = null;
+for (const cand of domainCandidates) {
+  try {
+    if ((await cand.count()) > 0) {
+      domainInput = cand;
+      break;
+    }
+  } catch {}
+}
+
+if (!domainInput) {
+  await safeScreenshot(distPage, "storage/domain-input-not-found.png");
+  throw new Error(`Could not find domain input on distribution page. URL: ${distPage.url()}`);
+}
+
+await domainInput.waitFor({ state: "visible", timeout: 60_000 });
 
   await domainInput.scrollIntoViewIfNeeded();
   await domainInput.click({ force: true });
