@@ -276,56 +276,87 @@ await safeScreenshot(page, "storage/verify-current-version.png");
 }
 
 async function selectCustomDistribution(distPage) {
-  // A) direct button
-  const selectCustomBtn = distPage
-    .locator('button:has-text("Select custom distribution")')
-    .first();
+  // 0) Sanity: ensure we’re on a partners distribution page and it has rendered something
+  await distPage.waitForLoadState("domcontentloaded").catch(() => {});
+  await distPage.waitForTimeout(1000);
 
-  if ((await selectCustomBtn.count()) > 0) {
-    await selectCustomBtn.waitFor({ timeout: 30_000 });
-    await selectCustomBtn.click({ force: true });
-    await sleep(800);
-    console.log('Clicked: "Select custom distribution" (direct)');
+  const u = distPage.url();
+  console.log("selectCustomDistribution() URL:", u);
+  await safeScreenshot(distPage, "storage/distribution-selectCustom-start.png");
+
+  if (!u.includes("partners.shopify.com")) {
+    throw new Error(`Not on partners distribution page. URL: ${u}`);
+  }
+
+  // 1) Wait for ANY anchor that indicates the distribution UI is present
+  const uiAnchor = distPage.locator(
+    [
+      'text=/distribution/i',
+      'text=/custom distribution/i',
+      'text=/select custom distribution/i',
+      'text=/generate link/i',
+      '#PolarisTextField1',
+      'button:has-text("Select")',
+      'button:has-text("Continue")',
+    ].join(",")
+  );
+
+  await uiAnchor.first().waitFor({ state: "visible", timeout: 90_000 });
+  await safeScreenshot(distPage, "storage/distribution-ui-anchor-visible.png");
+
+  // 2) If we already see the domain field / generate link, custom distribution is already selected
+  const domainField = distPage.locator("#PolarisTextField1");
+  const genBtn = distPage.locator('button:has-text("Generate link"), button:has-text("Generate")');
+
+  if ((await domainField.count()) > 0 || (await genBtn.count()) > 0) {
+    console.log("Custom distribution appears already selected (domain/generate UI present).");
     return;
   }
 
-  // B) click card/section
-  const cardTextExact = distPage.locator("text=/^\\s*Custom distribution\\s*$/im").first();
-  const cardTextBroad = distPage.locator("text=/custom distribution/i").first();
-
-  if (await cardTextExact.count()) {
-    await cardTextExact.waitFor({ timeout: 30_000 });
-    await cardTextExact.click({ force: true });
-  } else {
-    await cardTextBroad.waitFor({ timeout: 30_000 });
-    await cardTextBroad.click({ force: true });
+  // 3) Path A: direct button exists
+  const direct = distPage.locator('button:has-text("Select custom distribution")').first();
+  if ((await direct.count()) > 0) {
+    await direct.waitFor({ state: "visible", timeout: 30_000 });
+    await direct.click({ force: true });
+    console.log('Clicked: "Select custom distribution" (direct button)');
+    await distPage.waitForTimeout(1500);
+    await safeScreenshot(distPage, "storage/distribution-after-direct-select.png");
+    return;
   }
 
-  await sleep(500);
-
-  // Then click the green "Select" (NOT "Select custom distribution")
-  const selectBtn = distPage
-    .locator('button:has-text("Select")')
-    .filter({ hasNotText: "Select custom distribution" })
-    .first();
-
-  await selectBtn.waitFor({ timeout: 30_000 });
-  await selectBtn.click({ force: true });
-  await sleep(800);
-  console.log('Clicked: "Select" (after choosing custom distribution)');
-
-  // Sometimes a confirmation appears with "Select custom distribution"
-  const confirmBtn = distPage
-    .locator('button:has-text("Select custom distribution")')
-    .first();
-
-  if ((await confirmBtn.count()) > 0) {
-    await confirmBtn.click({ force: true });
-    await sleep(1000);
-    console.log('Clicked: Confirm "Select custom distribution"');
+  // 4) Path B: click the “Custom distribution” card/row/text (UI varies)
+  const customText = distPage.locator("text=/custom distribution/i").first();
+  if ((await customText.count()) > 0) {
+    await customText.waitFor({ state: "visible", timeout: 30_000 });
+    await customText.click({ force: true });
+    console.log('Clicked: "Custom distribution" (card/text)');
+    await distPage.waitForTimeout(800);
   }
+
+  // 5) Path C: there is usually a generic Select / Continue after choosing the method
+  const nextBtn = distPage
+    .locator('button:has-text("Select"), button:has-text("Continue"), button:has-text("Next")')
+    .filter({ hasNotText: /select custom distribution/i })
+    .first();
+
+  if ((await nextBtn.count()) > 0) {
+    await nextBtn.waitFor({ state: "visible", timeout: 30_000 });
+    await nextBtn.click({ force: true });
+    console.log('Clicked: "Select/Continue/Next" after choosing method');
+    await distPage.waitForTimeout(1500);
+  }
+
+  // 6) Confirm we landed on the custom distribution UI
+  if ((await distPage.locator("#PolarisTextField1").count()) === 0) {
+    await safeScreenshot(distPage, "storage/distribution-custom-not-reached.png");
+    throw new Error(
+      `Could not reach Custom distribution UI (missing #PolarisTextField1). URL: ${distPage.url()}`
+    );
+  }
+
+  console.log("Custom distribution UI reached.");
+  await safeScreenshot(distPage, "storage/distribution-custom-reached.png");
 }
-
 async function fillDomainAndGenerateLink(distPage, store_domain) {
   await distPage.waitForSelector("#PolarisTextField1", { timeout: 60_000 });
   const domainInput = distPage.locator("#PolarisTextField1");
