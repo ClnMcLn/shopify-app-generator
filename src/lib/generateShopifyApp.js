@@ -70,24 +70,41 @@ async function waitForAnyURL(page, patterns, timeout = 30_000) {
 }
 
 async function pickAccountIfNeeded(page) {
-  if (!page.url().includes("accounts.shopify.com/select")) return;
+  const url = page.url();
+  if (!url.includes("accounts.shopify.com/select")) return;
 
-  console.log("On account chooser. Selecting account tile...");
-  await page.waitForLoadState("domcontentloaded");
+  console.log("On account chooser. Waiting for options...", { url });
+  await safeScreenshot(page, "storage/account-chooser-arrived.png");
 
-  // Try common tile roles first
-  const tile = page
-    .getByRole("link", { name: /clientsuccess@retention\.com|Client Success/i })
+  // Let the page actually render
+  await page.waitForLoadState("domcontentloaded").catch(() => {});
+  await page.waitForTimeout(1500);
+
+  // Try common “continue/select” buttons first
+  const continueBtn = page
+    .locator('button:has-text("Continue"), button:has-text("Select"), button:has-text("Choose")')
+    .filter({ hasNotText: /create/i })
     .first();
 
-  if (await tile.count()) {
-    await tile.click({ force: true });
+  if (await continueBtn.count()) {
+    await continueBtn.waitFor({ state: "visible", timeout: 90_000 });
+    await safeScreenshot(page, "storage/account-chooser-before-continue.png");
+    await continueBtn.click({ force: true });
+    console.log("Account chooser: clicked Continue/Select button");
+    await page.waitForLoadState("domcontentloaded").catch(() => {});
     return;
   }
 
-  const anyClickable = page.locator('a[href], button, [role="button"], [data-testid*="account"], [class*="account"]');
-  await anyClickable.first().waitFor({ state: "attached", timeout: 90_000 });
-  await anyClickable.first().click({ force: true });
+  // Fallback: click any meaningful link (often the chooser is just a list of links)
+  const anyRedirectLink = page
+    .locator('main a[href], a[href*="dev.shopify.com"], a[href*="partners.shopify.com"]')
+    .first();
+
+  await anyRedirectLink.waitFor({ state: "visible", timeout: 90_000 });
+  await safeScreenshot(page, "storage/account-chooser-before-link.png");
+  await anyRedirectLink.click({ force: true });
+  console.log("Account chooser: clicked first redirect link");
+  await page.waitForLoadState("domcontentloaded").catch(() => {});
 }
 
 async function scrapeClientIdAndSecret(settingsPage) {
