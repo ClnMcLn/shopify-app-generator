@@ -1,6 +1,15 @@
 // src/lib/generateShopifyApp.js
 import { chromium } from "playwright";
 
+import fs from "node:fs";
+import path from "node:path";
+
+function ensureStorageDir() {
+  const dir = path.resolve(process.cwd(), "storage");
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
 /**
  * End-to-end Shopify Dev Dashboard -> create app -> configure version
  * -> release -> scrape client id/secret -> generate custom distribution install link.
@@ -43,10 +52,17 @@ function dashboardIdFromUrl(dashboardUrl) {
   return m ? m[1] : null;
 }
 
-async function safeScreenshot(page, path) {
+async function safeScreenshot(page, fileName) {
   try {
-    await page.screenshot({ path, fullPage: true });
-  } catch {}
+    const dir = ensureStorageDir();
+    const fullPath = path.join(dir, fileName.replace(/^storage\//, ""));
+    await page.screenshot({ path: fullPath, fullPage: true });
+    console.log("Saved screenshot:", fullPath);
+    return fullPath;
+  } catch (e) {
+    console.log("Screenshot failed:", e?.message || e);
+    return null;
+  }
 }
 
 async function waitForAnyURL(page, patterns, timeout = 30_000) {
@@ -74,7 +90,7 @@ async function pickAccountIfNeeded(page, partnersDistributionUrl) {
   if (!url.includes("accounts.shopify.com/select")) return;
 
   console.log("On account chooser — selecting account option", { url });
-  await safeScreenshot(page, "storage/account-chooser-arrived.png");
+  await safescreenshot(page, "account-chooser-arrived.png");
   await page.waitForLoadState("domcontentloaded").catch(() => {});
   await page.waitForTimeout(1500);
 
@@ -93,12 +109,12 @@ async function pickAccountIfNeeded(page, partnersDistributionUrl) {
 
   if (await choice.count()) {
     await choice.waitFor({ state: "visible", timeout: 60_000 });
-    await safeScreenshot(page, "storage/account-chooser-before-click.png");
+    await safescreenshot(page, "account-chooser-before-click.png");
     await choice.click({ force: true });
     console.log("Account chooser: clicked first account option");
     await page.waitForTimeout(2500);
   } else {
-    await safeScreenshot(page, "storage/account-chooser-no-options.png");
+    await safescreenshot(page, "account-chooser-no-options.png");
     throw new Error(`Account chooser has no clickable options. URL: ${page.url()}`);
   }
 
@@ -108,7 +124,7 @@ async function pickAccountIfNeeded(page, partnersDistributionUrl) {
 
   const after = page.url();
   console.log("After chooser selection + goto distribution, URL:", after);
-  await safeScreenshot(page, "storage/account-chooser-after-click.png");
+  await safescreenshot(page, "account-chooser-after-click.png");
 
   if (after.includes("accounts.shopify.com/select")) {
     throw new Error(`Still stuck on account chooser after clicking an option. URL: ${after}`);
@@ -266,10 +282,10 @@ async function configureVersionAndRelease(page, { appId, dashboardId }) {
 
   const disabled = await releaseBtn.isDisabled().catch(() => true);
   console.log("Release visible. Disabled?", disabled);
-  await safeScreenshot(page, "storage/before-release.png");
+  await safescreenshot(page, "before-release.png");
 
   if (disabled) {
-    await safeScreenshot(page, "storage/release-disabled.png");
+    await safescreenshot(page, "release-disabled.png");
     throw new Error('Release button is disabled (fields likely not valid / not saved).');
   }
 
@@ -307,7 +323,7 @@ const vScopes = (await page
 console.log("VERIFY (current page) app url:", vAppUrl);
 console.log("VERIFY (current page) scopes len:", vScopes.length);
 
-await safeScreenshot(page, "storage/verify-current-version.png");
+await safescreenshot(page, "verify-current-version.png");
 }
 
 async function selectCustomDistribution(distPage) {
@@ -536,7 +552,7 @@ export async function generateShopifyApp({ brand_name, store_domain }) {
 
     const appId = extractAppId(page.url());
     if (!appId) {
-      await safeScreenshot(page, "storage/create-app-no-appid.png");
+      await safescreenshot(page, "create-app-no-appid.png");
       throw new Error(`Create succeeded but couldn't parse appId from URL: ${page.url()}`);
     }
 
@@ -548,7 +564,7 @@ export async function generateShopifyApp({ brand_name, store_domain }) {
     await page.goto(settingsUrl, { waitUntil: "domcontentloaded" });
     await sleep(1200);
     console.log("Settings page URL:", page.url());
-    await safeScreenshot(page, "storage/app-settings.png");
+    await safescreenshot(page, "app-settings.png");
 
     const { clientId, clientSecret } = await scrapeClientIdAndSecret(page);
 
