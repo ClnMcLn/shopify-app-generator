@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import http from "node:http";
 import { generateShopifyApp } from "./lib/generateShopifyApp.js";
 
 const required = ["SHOPIFY_EMAIL", "SHOPIFY_PASSWORD", "SHOPIFY_DEV_DASHBOARD_URL"];
@@ -12,82 +13,67 @@ for (const k of required) {
 
 const app = express();
 app.set("trust proxy", true);
-app.use(express.json());
+app.use(express.json({ limit: "2mb" }));
 
-// request logging
-app.use((req, _res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`, {
-    bodyStub: req.body?.stub,
-    bodyDryRun: req.body?.dry_run,
-    envSTUB: process.env.STUB,
-    envDRY_RUN: process.env.DRY_RUN,
-  });
+// Give long-running Playwright requests plenty of time
+app.use((req, res, next) => {
+  // 10 minutes (adjust if you want)
+  res.setTimeout(10 * 60 * 1000);
   next();
 });
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, version: "ping-should-exist-2026-01-18" });
-});
-
-app.get("/ping", (req, res) => {
-  console.log("PING HIT", new Date().toISOString(), {
-    STUB: process.env.STUB,
-    DRY_RUN: process.env.DRY_RUN,
-    retoolDebug: req.headers["x-retool-debug"],
-  });
-
-  res.json({
-    ok: true,
-    ts: Date.now(),
-    env: {
-      STUB: process.env.STUB,
-      DRY_RUN: process.env.DRY_RUN,
-    },
-  });
+  res.json({ ok: true });
 });
 
 app.post("/shopify/app-generator", async (req, res) => {
-  const { brand_name, store_domain, stub, dry_run } = req.body || {};
+  const { brand_name, store_domain } = req.body || {};
 
   if (!brand_name || typeof brand_name !== "string") {
     return res.status(400).json({ error: "brand_name is required" });
   }
 
-  if (!store_domain || typeof store_domain !== "string" || !store_domain.endsWith("myshopify.com")) {
-    return res.status(400).json({ error: "store_domain must end in myshopify.com" });
+  if (!store_domain || typeof store_domain !== "string" || !store_domain.includes("myshopify.com")) {
+    return res.status(400).json({ error: "store_domain must include myshopify.com" });
   }
 
   try {
-    const isTrue = (v) => String(v).toLowerCase() === "true";
-
-    const resolvedStub =
-      stub === true ||
-      dry_run === true ||
-      (stub !== false &&
-        dry_run !== false &&
-        (isTrue(process.env.STUB) || isTrue(process.env.DRY_RUN)));
-
-    console.log("MODE RESOLVED:", { stub, dry_run, resolvedStub });
-
-    if (resolvedStub) {
-      return res.json({
-        mode: "stub",
-        app_name: `${brand_name} X Retention`,
-        client_id: "stub_client_id",
-        client_secret: "stub_client_secret",
-        distribution_link: "stub_distribution_link",
-      });
-    }
+    console.log(`[${new Date().toISOString()}] starting generateShopifyApp`, {
+      brand_name,
+      store_domain,
+    });
 
     const result = await generateShopifyApp({ brand_name, store_domain });
-    return res.json({ mode: "real", ...result });
+
+    console.log(`[${new Date().toISOString()}] generateShopifyApp success`, {
+      has_client_id: !!result?.client_id,
+      has_client_secret: !!result?.client_secret,
+      has_distribution_link: !!result?.distribution_link,
+    });
+
+    return res.status(200).json(result);
   } catch (err) {
     console.error("generateShopifyApp error:", err);
-    return res.status(500).json({ error: err?.message || "Unknown error" });
+    return res.status(500).json({
+      error: err?.message || "Unknown error",
+      name: err?.name,
+      // helpful when Retool shows you the JSON:
+      ts: new Date().toISOString(),
+    });
   }
 });
 
 const port = process.env.PORT || 3000;
-app.listen(port, () => {
+
+// Use an explicit http server so we can raise server-side timeouts too
+const server = http.createServer(app);
+
+// 10 minutes (must exceed your longest run)
+server.setTimeout(10 * 60 * 1000);
+// Keep-alive tuning (helps some proxies)
+server.keepAliveTimeout = 75 * 1000;
+server.headersTimeout = 80 * 1000;
+
+server.listen(port, () => {
   console.log(`Server listening on port ${port}`);
 });
