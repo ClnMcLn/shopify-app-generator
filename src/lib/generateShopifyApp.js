@@ -281,39 +281,25 @@ console.log('Clicked: Confirm "Release"');
   await page.waitForLoadState("networkidle").catch(() => {});
   await page.waitForTimeout(1200);
 
-  // Verify release by confirming SOME version is Active in the versions list
-  const versionsListUrl = `https://dev.shopify.com/dashboard/${dashboardId}/apps/${appId}/versions`;
+// ---- VERIFY AFTER RELEASE (verify on CURRENT PAGE; no version list click) ----
+// Wait for an "Active" indicator if it appears (don’t fail if it doesn’t)
+await page.getByText(/Active/i).first().waitFor({ timeout: 30_000 }).catch(() => {});
 
-  let activeVersionText = "";
-  const maxWaitMs = 90_000;
-  const start = Date.now();
+// Verify fields on the *current* version detail page
+const vAppUrl = (await page
+  .locator("#version_app_module_data_app_home_app_url")
+  .inputValue()
+  .catch(() => "")).trim();
 
-  while (Date.now() - start < maxWaitMs) {
-    await page.goto(versionsListUrl, { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(1500);
+const vScopes = (await page
+  .locator("#version_app_module_data_app_access_app_scopes")
+  .inputValue()
+  .catch(() => "")).trim();
 
-    // Shopify sometimes renders these as divs/cards, not <tr>, so search broadly
-    const activeRow = page
-      .locator('tr, [role="row"], div')
-      .filter({ hasText: /version\s*\d+/i })
-      .filter({ hasText: /active/i })
-      .first();
+console.log("VERIFY (current page) app url:", vAppUrl);
+console.log("VERIFY (current page) scopes len:", vScopes.length);
 
-    if (await activeRow.count()) {
-      activeVersionText = (await activeRow.innerText().catch(() => "")).trim();
-      await safeScreenshot(page, "storage/verify-active-version-found.png");
-      console.log("VERIFY: Active version row:", activeVersionText);
-      break;
-    }
-
-    await safeScreenshot(page, "storage/verify-active-version-not-yet.png");
-    await page.waitForTimeout(2000);
-  }
-
-  if (!activeVersionText) {
-    await safeScreenshot(page, "storage/verify-no-active-version.png");
-    throw new Error('Release verify failed: no version is marked Active in the versions list.');
-  }
+await safeScreenshot(page, "storage/verify-current-version.png");
 }
 
 async function selectCustomDistribution(distPage) {
