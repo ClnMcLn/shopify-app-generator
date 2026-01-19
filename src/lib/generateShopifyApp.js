@@ -73,26 +73,46 @@ async function pickAccountIfNeeded(page, partnersDistributionUrl) {
   const url = page.url();
   if (!url.includes("accounts.shopify.com/select")) return;
 
-  console.log("On account chooser — bypassing to partners distribution", { url });
+  console.log("On account chooser — selecting account option", { url });
   await safeScreenshot(page, "storage/account-chooser-arrived.png");
+  await page.waitForLoadState("domcontentloaded").catch(() => {});
+  await page.waitForTimeout(1500);
 
-  // Try a few times: sometimes Shopify keeps redirecting back to chooser
-  for (let attempt = 1; attempt <= 5; attempt++) {
-    console.log(`Chooser bypass attempt ${attempt}: goto partners distribution`);
-    await page.goto(partnersDistributionUrl, { waitUntil: "domcontentloaded" });
-    await page.waitForTimeout(2000);
+  // 1) Click an account option / tile / continue link (the chooser usually needs ONE click)
+  const choice = page.locator(
+    [
+      '[data-testid*="account"]',
+      '[class*="account"] a[href]',
+      'main a[href]',
+      'a[href*="continue"]',
+      'a[href*="partners.shopify.com"]',
+      'button:has-text("Continue")',
+      'button:has-text("Select")',
+    ].join(", ")
+  ).first();
 
-    const now = page.url();
-    console.log("After goto, URL:", now);
-    await safeScreenshot(page, `storage/account-chooser-bypass-attempt-${attempt}.png`);
-
-    if (now.includes("partners.shopify.com")) return;
-    if (!now.includes("accounts.shopify.com/select")) return; // some other redirect, let caller handle
+  if (await choice.count()) {
+    await choice.waitFor({ state: "visible", timeout: 60_000 });
+    await safeScreenshot(page, "storage/account-chooser-before-click.png");
+    await choice.click({ force: true });
+    console.log("Account chooser: clicked first account option");
+    await page.waitForTimeout(2500);
+  } else {
+    await safeScreenshot(page, "storage/account-chooser-no-options.png");
+    throw new Error(`Account chooser has no clickable options. URL: ${page.url()}`);
   }
 
-  throw new Error(
-    `Account chooser bypass failed; still on chooser after retries. Current: ${page.url()}`
-  );
+  // 2) Now go to distribution page (should work once chooser is satisfied)
+  await page.goto(partnersDistributionUrl, { waitUntil: "domcontentloaded" });
+  await page.waitForTimeout(2500);
+
+  const after = page.url();
+  console.log("After chooser selection + goto distribution, URL:", after);
+  await safeScreenshot(page, "storage/account-chooser-after-click.png");
+
+  if (after.includes("accounts.shopify.com/select")) {
+    throw new Error(`Still stuck on account chooser after clicking an option. URL: ${after}`);
+  }
 }
 
 async function scrapeClientIdAndSecret(settingsPage) {
