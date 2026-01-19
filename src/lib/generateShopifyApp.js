@@ -512,9 +512,9 @@ async function generateShopifyApp({ brand_name, store_domain }) {
   const appName = `${brand_name} x Retention`;
 
   const browser = await chromium.launch({
-    headless: process.env.PW_HEADED !== "1",
-    slowMo: process.env.PW_HEADED === "1" ? 150 : 0,
-  });
+  headless: true,
+  args: ["--no-sandbox", "--disable-dev-shm-usage"],
+});
 
   const context = await browser.newContext({
     storageState: "storage/shopify-storage.json",
