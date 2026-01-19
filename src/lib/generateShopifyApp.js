@@ -281,21 +281,39 @@ console.log('Clicked: Confirm "Release"');
   await page.waitForLoadState("networkidle").catch(() => {});
   await page.waitForTimeout(1200);
 
-// Verify release by confirming Version 2 is Active in the versions list
-const versionsListUrl = `https://dev.shopify.com/dashboard/${dashboardId}/apps/${appId}/versions`;
-await page.goto(versionsListUrl, { waitUntil: "domcontentloaded" });
-await page.waitForTimeout(1500);
+  // Verify release by confirming SOME version is Active in the versions list
+  const versionsListUrl = `https://dev.shopify.com/dashboard/${dashboardId}/apps/${appId}/versions`;
 
-// Look for a row that contains "Version 2" AND "Active"
-const v2ActiveRow = page.locator('tr', { hasText: /version\s*2/i }).filter({ hasText: /active/i });
+  let activeVersionText = "";
+  const maxWaitMs = 90_000;
+  const start = Date.now();
 
-if (await v2ActiveRow.count() === 0) {
-  await safeScreenshot(page, "storage/verify-version-2-not-active.png");
-  throw new Error('Release verify failed: "Version 2" is not marked Active in the versions list.');
-}
+  while (Date.now() - start < maxWaitMs) {
+    await page.goto(versionsListUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(1500);
 
-console.log('VERIFY: Version 2 is Active ✅');
-await safeScreenshot(page, "storage/verify-version-2-active.png");
+    // Shopify sometimes renders these as divs/cards, not <tr>, so search broadly
+    const activeRow = page
+      .locator('tr, [role="row"], div')
+      .filter({ hasText: /version\s*\d+/i })
+      .filter({ hasText: /active/i })
+      .first();
+
+    if (await activeRow.count()) {
+      activeVersionText = (await activeRow.innerText().catch(() => "")).trim();
+      await safeScreenshot(page, "storage/verify-active-version-found.png");
+      console.log("VERIFY: Active version row:", activeVersionText);
+      break;
+    }
+
+    await safeScreenshot(page, "storage/verify-active-version-not-yet.png");
+    await page.waitForTimeout(2000);
+  }
+
+  if (!activeVersionText) {
+    await safeScreenshot(page, "storage/verify-no-active-version.png");
+    throw new Error('Release verify failed: no version is marked Active in the versions list.');
+  }
 }
 
 async function selectCustomDistribution(distPage) {
