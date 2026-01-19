@@ -85,10 +85,14 @@ async function pickAccountIfNeeded(page) {
     return;
   } catch {}
 
-  // Fallback: click first visible link tile
-  const firstTile = page.getByRole("link").first();
-  await firstTile.waitFor({ timeout: 30_000 });
-  await firstTile.click({ force: true });
+// Fallback: click first visible account tile (button OR link)
+const firstTile = page
+  .getByRole("button")
+  .or(page.getByRole("link"))
+  .first();
+
+await firstTile.waitFor({ timeout: 90_000 });
+await firstTile.click({ force: true });
 }
 
 async function scrapeClientIdAndSecret(settingsPage) {
