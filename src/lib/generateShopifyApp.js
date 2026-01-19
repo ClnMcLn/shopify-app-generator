@@ -448,17 +448,44 @@ export async function generateShopifyApp({ brand_name, store_domain }) {
     const distributionUrl = `https://partners.shopify.com/${partnersId}/apps/${appId}/distribution`;
     console.log("Distribution page URL:", distributionUrl);
 
-    const distPage = await context.newPage();
-    await distPage.goto(distributionUrl, { waitUntil: "domcontentloaded" });
-    console.log("Distribution page ACTUAL URL:", distPage.url());
+const distPage = await context.newPage();
+await distPage.goto(distributionUrl, { waitUntil: "domcontentloaded" });
+console.log("Distribution page ACTUAL URL:", distPage.url());
 
-    // If Shopify sends us to accounts.shopify.com, it’s a login/2FA wall.
+// If Shopify sends us to accounts.shopify.com, it’s a login/2FA wall.
+// - On Render/headless: fail fast (can't complete 2FA)
+// - Locally with PW_HEADED=1: let you complete it manually, then continue and save storageState
+if (distPage.url().includes("accounts.shopify.com")) {
+  if (process.env.PW_HEADED === "1") {
+    console.log("2FA/login detected on Shopify Accounts. Complete it in the browser window now...");
+
+    // Wait up to 10 minutes for you to finish 2FA and be redirected back to Partners.
+    const start = Date.now();
+    while (Date.now() - start < 10 * 60_000) {
+      if (distPage.url().includes("partners.shopify.com")) break;
+      await distPage.waitForTimeout(1000);
+    }
+
+    if (!distPage.url().includes("partners.shopify.com")) {
+      await safeScreenshot(distPage, "storage/still-blocked-by-2fa.png");
+      throw new Error(`Still blocked by Shopify Accounts after waiting. URL: ${distPage.url()}`);
+    }
+
+    console.log("Back on partners after 2FA:", distPage.url());
+
+    // Save fresh storageState that includes Partners access
+    await context.storageState({ path: "storage/shopify-storage.json" });
+    console.log("Saved updated storageState with Partners auth");
+  } else {
     await assertNotBlockedBy2FA(distPage, "partners-distribution");
+  }
+}
 
-    // If we got here, continue best-effort distribution link gen
-    await safeScreenshot(distPage, "distribution-before.png");
+await safeScreenshot(distPage, "storage/distribution-before.png");
 
-    await selectCustomDistribution(distPage);
+// 9) Select custom distribution
+await selectCustomDistribution(distPage);
+
     console.log("After selecting custom distribution, URL:", distPage.url());
     await safeScreenshot(distPage, "distribution-after-select.png");
 
