@@ -1,12 +1,36 @@
 // src/lib/generateShopifyApp.js
 import { chromium } from "playwright";
-
 import fs from "node:fs/promises";
 import path from "node:path";
 
+/**
+ * End-to-end Shopify Dev Dashboard -> create app -> configure version
+ * -> release -> scrape client id/secret -> (attempt) generate custom distribution install link.
+ *
+ * IMPORTANT FINDING:
+ * - Partners distribution step may redirect to Shopify Accounts login (accounts.shopify.com)
+ *   and can require 2FA / Cloudflare verification.
+ * - That flow cannot be completed in headless Render/Docker.
+ * - We detect it, screenshot it, and fail with a clear error so callers know what happened.
+ *
+ * Expects env vars:
+ * - SHOPIFY_DEV_DASHBOARD_URL
+ * - SHOPIFY_PARTNERS_ID (optional; default 2767396)
+ * - APP_URL
+ * - REDIRECT_URL
+ * - SCOPES_CSV
+ * - PW_HEADED=1 (optional; headed mode for debugging locally)
+ *
+ * Uses storageState:
+ * - storage/shopify-storage.json
+ */
+
+// -------- storage / screenshots --------
 const STORAGE_DIR =
   process.env.STORAGE_DIR ||
-  (process.env.RENDER ? "/app/storage" : path.join(process.cwd(), "storage"));
+  (process.env.RENDER
+    ? "/app/storage"
+    : path.join(process.cwd(), "storage"));
 
 async function ensureStorageDir() {
   await fs.mkdir(STORAGE_DIR, { recursive: true });
@@ -14,49 +38,6 @@ async function ensureStorageDir() {
 
 function storagePath(filename) {
   return path.join(STORAGE_DIR, filename);
-}
-
-
-/**
- * End-to-end Shopify Dev Dashboard -> create app -> configure version
- * -> release -> scrape client id/secret -> generate custom distribution install link.
- *
- * Expects these env vars:
- * - SHOPIFY_DEV_DASHBOARD_URL (e.g. https://dev.shopify.com/dashboard/130027305/apps)
- * - SHOPIFY_PARTNERS_ID (e.g. 2767396) [optional; default 2767396]
- * - APP_URL (e.g. https://app.retention.com/integrations/oauth2/ShopifyOauth/start)
- * - REDIRECT_URL (e.g. https://app.retention.com/integrations/oauth2/ShopifyOauth)
- * - SCOPES_CSV (comma-separated scopes)
- * - PW_HEADED=1 (optional; headed mode for debugging)  [NOTE: on Render keep headless]
- *
- * Also uses storageState:
- * - storage/shopify-storage.json (must exist and be valid logged-in state)
- */
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-function clean(s) {
-  return (s || "").replace(/\s+/g, " ").trim();
-}
-
-function extractAppId(url) {
-  const m = String(url || "").match(/\/apps\/(\d+)(?:\/|$)/);
-  return m ? m[1] : null;
-}
-
-function baseDevUrl(href) {
-  if (!href) return href;
-  if (href.startsWith("http://") || href.startsWith("https://")) return href;
-  if (href.startsWith("/")) return `https://dev.shopify.com${href}`;
-  return `https://dev.shopify.com/${href}`;
-}
-
-function dashboardIdFromUrl(dashboardUrl) {
-  // dashboardUrl like: https://dev.shopify.com/dashboard/130027305/apps
-  const m = String(dashboardUrl || "").match(/\/dashboard\/(\d+)\b/);
-  return m ? m[1] : null;
 }
 
 async function safeScreenshot(page, filename) {
@@ -70,78 +51,60 @@ async function safeScreenshot(page, filename) {
   }
 }
 
-async function waitForAnyURL(page, patterns, timeout = 30_000) {
-  const start = Date.now();
-  while (Date.now() - start < timeout) {
-    const u = page.url();
-    if (
-      patterns.some((p) =>
-        p instanceof RegExp ? p.test(u) : String(u).includes(String(p))
-      )
-    ) {
-      return u;
-    }
-    await sleep(250);
-  }
-  throw new Error(
-    `Timed out waiting for URL to match any: ${patterns
-      .map(String)
-      .join(", ")}. Current: ${page.url()}`
-  );
+// -------- misc helpers --------
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
-async function pickAccountIfNeeded(page, partnersDistributionUrl) {
+function clean(s) {
+  return (s || "").replace(/\s+/g, " ").trim();
+}
+
+function extractAppId(url) {
+  const m = String(url || "").match(/\/apps\/(\d+)(?:\/|$)/);
+  return m ? m[1] : null;
+}
+
+function dashboardIdFromUrl(dashboardUrl) {
+  const m = String(dashboardUrl || "").match(/\/dashboard\/(\d+)\b/);
+  return m ? m[1] : null;
+}
+
+// Detect the Shopify Accounts / 2FA wall (login page or account select)
+async function assertNotBlockedBy2FA(page, labelForLogs = "page") {
   const url = page.url();
-  if (!url.includes("accounts.shopify.com/select")) return;
 
-  console.log("On account chooser — selecting account option", { url });
-  await safeScreenshot(page, "account-chooser-arrived.png");
-  await page.waitForLoadState("domcontentloaded").catch(() => {});
-  await page.waitForTimeout(1500);
+  const isAccounts =
+    url.includes("accounts.shopify.com/select") ||
+    url.includes("accounts.shopify.com/lookup") ||
+    url.includes("accounts.shopify.com/login") ||
+    url.includes("accounts.shopify.com");
 
-  // 1) Click an account option / tile / continue link (the chooser usually needs ONE click)
-  const choice = page.locator(
-    [
-      '[data-testid*="account"]',
-      '[class*="account"] a[href]',
-      'main a[href]',
-      'a[href*="continue"]',
-      'a[href*="partners.shopify.com"]',
-      'button:has-text("Continue")',
-      'button:has-text("Select")',
-    ].join(", ")
-  ).first();
+  if (!isAccounts) return;
 
-  if (await choice.count()) {
-    await choice.waitFor({ state: "visible", timeout: 60_000 });
-    await safeScreenshot(page, "account-chooser-before-click.png");
-    await choice.click({ force: true });
-    console.log("Account chooser: clicked first account option");
-    await page.waitForTimeout(2500);
-  } else {
-    await safeScreenshot(page, "account-chooser-no-options.png");
-// Detect Cloudflare challenge/interstitial
-const cur = page.url();
-if (cur.includes("__cf_chl_rt_tk") || cur.includes("cf_chl")) {
-  await safeScreenshot(page, "cloudflare-challenge.png");
+  // Try to confirm it’s the login UI (best-effort)
+  const looksLikeLoginUi =
+    (await page.getByRole("heading", { name: /log in/i }).count().catch(() => 0)) > 0 ||
+    (await page.getByRole("button", { name: /continue with email/i }).count().catch(() => 0)) > 0 ||
+    (await page.getByText(/continue to shopify account/i).count().catch(() => 0)) > 0;
+
+  await safeScreenshot(page, `blocked-${labelForLogs}.png`);
+
   throw new Error(
-    `Blocked by Cloudflare challenge on Shopify Accounts (cannot proceed headlessly on Render). URL: ${cur}`
+    [
+      `Blocked by Shopify Accounts login / 2FA at ${labelForLogs}.`,
+      `Current URL: ${url}`,
+      looksLikeLoginUi
+        ? `Detected Shopify login UI (2FA likely required).`
+        : `Detected accounts.shopify.com redirect (auth required).`,
+      ``,
+      `This cannot be completed in headless Render/Docker.`,
+      `Run locally with PW_HEADED=1, complete login/2FA, then export a fresh storageState that includes Partners access.`,
+    ].join("\n")
   );
-}  }
-
-  // 2) Now go to distribution page (should work once chooser is satisfied)
-  await page.goto(partnersDistributionUrl, { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(2500);
-
-  const after = page.url();
-  console.log("After chooser selection + goto distribution, URL:", after);
-  await safeScreenshot(page, "account-chooser-after-click.png");
-
-  if (after.includes("accounts.shopify.com/select")) {
-    throw new Error(`Still stuck on account chooser after clicking an option. URL: ${after}`);
-  }
 }
 
+// -------- scraping helpers --------
 async function scrapeClientIdAndSecret(settingsPage) {
   const idCandidates = [
     settingsPage.locator('input[id*="client_id" i]').first(),
@@ -155,8 +118,7 @@ async function scrapeClientIdAndSecret(settingsPage) {
     try {
       if ((await c.count()) === 0) continue;
       const tag = (await c.evaluate((el) => el.tagName)).toLowerCase();
-      clientId =
-        tag === "code" ? clean(await c.textContent()) : clean(await c.inputValue());
+      clientId = tag === "code" ? clean(await c.textContent()) : clean(await c.inputValue());
       if (clientId) break;
     } catch {}
   }
@@ -182,8 +144,7 @@ async function scrapeClientIdAndSecret(settingsPage) {
     try {
       if ((await c.count()) === 0) continue;
       const tag = (await c.evaluate((el) => el.tagName)).toLowerCase();
-      clientSecret =
-        tag === "code" ? clean(await c.textContent()) : clean(await c.inputValue());
+      clientSecret = tag === "code" ? clean(await c.textContent()) : clean(await c.inputValue());
       if (clientSecret) break;
     } catch {}
   }
@@ -201,15 +162,14 @@ async function configureVersionAndRelease(page, { appId, dashboardId }) {
   if (!appUrl) throw new Error("Missing env var: APP_URL");
   if (!redirectUrl) throw new Error("Missing env var: REDIRECT_URL");
   if (!scopesCsv) throw new Error("Missing env var: SCOPES_CSV");
-  if (!dashboardId)
-    throw new Error("Could not parse dashboard id from SHOPIFY_DEV_DASHBOARD_URL");
+  if (!dashboardId) throw new Error("Could not parse dashboard id from SHOPIFY_DEV_DASHBOARD_URL");
 
   const versionsNewUrl = `https://dev.shopify.com/dashboard/${dashboardId}/apps/${appId}/versions/new`;
   await page.goto(versionsNewUrl, { waitUntil: "domcontentloaded" });
   console.log("Versions/new URL:", page.url());
   await sleep(1200);
 
-  // ---- App URL (hard-target by ID) ----
+  // App URL
   const appUrlInput = page.locator("#version_app_module_data_app_home_app_url");
   await appUrlInput.waitFor({ state: "visible", timeout: 30_000 });
   await appUrlInput.scrollIntoViewIfNeeded();
@@ -221,36 +181,29 @@ async function configureVersionAndRelease(page, { appId, dashboardId }) {
   const appUrlReadback = (await appUrlInput.inputValue()).trim();
   console.log("READBACK App URL:", appUrlReadback);
   if (appUrlReadback !== appUrl) {
-    await page.screenshot({ path: "storage/app-url-did-not-stick.png", fullPage: true });
-    throw new Error(
-      `App URL did not stick. Expected "${appUrl}", got "${appUrlReadback}"`
-    );
+    await safeScreenshot(page, "app-url-did-not-stick.png");
+    throw new Error(`App URL did not stick. Expected "${appUrl}", got "${appUrlReadback}"`);
   }
 
-  // ---- Embed app checkbox (target by label text) ----
-  const embedCheckbox = page.getByRole("checkbox", {
-    name: /embed app in shopify admin/i,
-  });
-
-  if (await embedCheckbox.count()) {
-    const checked = await embedCheckbox.isChecked();
-    console.log("Embed checked before:", checked);
-    if (checked) {
-      await embedCheckbox.click({ force: true });
-      await sleep(300);
-    }
-    console.log("Embed checked after:", await embedCheckbox.isChecked());
-  } else {
-    await page.screenshot({ path: "storage/embed-checkbox-not-found.png", fullPage: true });
+  // Embed checkbox
+  const embedCheckbox = page.getByRole("checkbox", { name: /embed app in shopify admin/i });
+  if ((await embedCheckbox.count()) === 0) {
+    await safeScreenshot(page, "embed-checkbox-not-found.png");
     throw new Error('Could not find "Embed app in Shopify admin" checkbox');
   }
 
-  await page.screenshot({
-    path: "storage/before-release-after-url-embed.png",
-    fullPage: true,
-  });
+  // Your prior behavior: uncheck if checked
+  const checked = await embedCheckbox.isChecked();
+  console.log("Embed checked before:", checked);
+  if (checked) {
+    await embedCheckbox.click({ force: true });
+    await sleep(300);
+  }
+  console.log("Embed checked after:", await embedCheckbox.isChecked());
 
-  // ---- Scopes ----
+  await safeScreenshot(page, "before-release-after-url-embed.png");
+
+  // Scopes
   const scopesField = page.locator("#version_app_module_data_app_access_app_scopes");
   await scopesField.waitFor({ timeout: 30_000 });
   await scopesField.scrollIntoViewIfNeeded();
@@ -262,7 +215,7 @@ async function configureVersionAndRelease(page, { appId, dashboardId }) {
   console.log("Filled: Scopes");
   console.log("Scopes readback length:", scopesRb.length);
 
-  // ---- Redirect URLs ----
+  // Redirect URLs (best-effort selector)
   const redirectField = page
     .locator(
       [
@@ -272,9 +225,7 @@ async function configureVersionAndRelease(page, { appId, dashboardId }) {
         'input[name*="redirect" i]',
       ].join(",")
     )
-    .filter({
-      hasNot: page.locator("#version_app_module_data_app_access_app_optional_scopes"),
-    })
+    .filter({ hasNot: page.locator("#version_app_module_data_app_access_app_optional_scopes") })
     .first();
 
   await redirectField.waitFor({ timeout: 30_000 });
@@ -286,7 +237,7 @@ async function configureVersionAndRelease(page, { appId, dashboardId }) {
   const redirectRb = (await redirectField.inputValue().catch(() => "")).trim();
   console.log("Redirect readback:", redirectRb);
 
-  // ---- RELEASE ----
+  // Release
   await page.waitForTimeout(500);
   const releaseBtn = page.getByRole("button", { name: /^release$/i }).first();
   await releaseBtn.waitFor({ state: "visible", timeout: 30_000 });
@@ -304,121 +255,65 @@ async function configureVersionAndRelease(page, { appId, dashboardId }) {
   console.log('Clicked: "Release"');
   await page.waitForTimeout(800);
 
-// Confirm release: sometimes it's a modal, sometimes it's a second button on the page
-const confirmReleaseBtn = page
-  .getByRole("button", { name: /^release$/i })
-  .filter({ hasNotText: /create an app/i })
-  .last();
+  // Confirm release (modal or secondary button)
+  const confirmReleaseBtn = page
+    .getByRole("button", { name: /^release$/i })
+    .filter({ hasNotText: /create an app/i })
+    .last();
 
-await confirmReleaseBtn.waitFor({ state: "visible", timeout: 30_000 });
-await confirmReleaseBtn.click({ force: true });
-console.log('Clicked: Confirm "Release"');
+  if ((await confirmReleaseBtn.count()) > 0) {
+    await confirmReleaseBtn.waitFor({ state: "visible", timeout: 30_000 });
+    await confirmReleaseBtn.click({ force: true });
+    console.log('Clicked: Confirm "Release"');
+  }
+
   await page.waitForLoadState("networkidle").catch(() => {});
   await page.waitForTimeout(1200);
 
-// ---- VERIFY AFTER RELEASE (verify on CURRENT PAGE; no version list click) ----
-// Wait for an "Active" indicator if it appears (don’t fail if it doesn’t)
-await page.getByText(/Active/i).first().waitFor({ timeout: 30_000 }).catch(() => {});
+  // Verify on current page (don’t depend on Versions list UI)
+  const vAppUrl = (await page.locator("#version_app_module_data_app_home_app_url").inputValue().catch(() => "")).trim();
+  const vScopes = (await page.locator("#version_app_module_data_app_access_app_scopes").inputValue().catch(() => "")).trim();
 
-// Verify fields on the *current* version detail page
-const vAppUrl = (await page
-  .locator("#version_app_module_data_app_home_app_url")
-  .inputValue()
-  .catch(() => "")).trim();
-
-const vScopes = (await page
-  .locator("#version_app_module_data_app_access_app_scopes")
-  .inputValue()
-  .catch(() => "")).trim();
-
-console.log("VERIFY (current page) app url:", vAppUrl);
-console.log("VERIFY (current page) scopes len:", vScopes.length);
-
-await safeScreenshot(page, "verify-current-version.png");
+  console.log("VERIFY (current page) app url:", vAppUrl);
+  console.log("VERIFY (current page) scopes len:", vScopes.length);
+  await safeScreenshot(page, "verify-current-version.png");
 }
 
+// Distribution link generation is best-effort: it will not run if 2FA blocks access.
 async function selectCustomDistribution(distPage) {
-  // 0) Sanity: ensure we’re on a partners distribution page and it has rendered something
-  await distPage.waitForLoadState("domcontentloaded").catch(() => {});
-  await distPage.waitForTimeout(1000);
-
-  const u = distPage.url();
-  console.log("selectCustomDistribution() URL:", u);
-  await safeScreenshot(distPage, "storage/distribution-selectCustom-start.png");
-
-  if (!u.includes("partners.shopify.com")) {
-    throw new Error(`Not on partners distribution page. URL: ${u}`);
+  // Guard: must be on partners
+  if (!distPage.url().includes("partners.shopify.com")) {
+    await safeScreenshot(distPage, "distribution-not-on-partners.png");
+    throw new Error(`Not on partners distribution page. URL: ${distPage.url()}`);
   }
 
-  // 1) Wait for ANY anchor that indicates the distribution UI is present
-  const uiAnchor = distPage.locator(
-    [
-      'text=/distribution/i',
-      'text=/custom distribution/i',
-      'text=/select custom distribution/i',
-      'text=/generate link/i',
-      '#PolarisTextField1',
-      'button:has-text("Select")',
-      'button:has-text("Continue")',
-    ].join(",")
-  );
-
-  await uiAnchor.first().waitFor({ state: "visible", timeout: 90_000 });
-  await safeScreenshot(distPage, "storage/distribution-ui-anchor-visible.png");
-
-  // 2) If we already see the domain field / generate link, custom distribution is already selected
-  const domainField = distPage.locator("#PolarisTextField1");
-  const genBtn = distPage.locator('button:has-text("Generate link"), button:has-text("Generate")');
-
-  if ((await domainField.count()) > 0 || (await genBtn.count()) > 0) {
-    console.log("Custom distribution appears already selected (domain/generate UI present).");
+  // Direct button
+  const selectCustomBtn = distPage.locator('button:has-text("Select custom distribution")').first();
+  if ((await selectCustomBtn.count()) > 0) {
+    await selectCustomBtn.waitFor({ timeout: 30_000 });
+    await selectCustomBtn.click({ force: true });
+    await sleep(800);
+    console.log('Clicked: "Select custom distribution" (direct)');
     return;
   }
 
-  // 3) Path A: direct button exists
-  const direct = distPage.locator('button:has-text("Select custom distribution")').first();
-  if ((await direct.count()) > 0) {
-    await direct.waitFor({ state: "visible", timeout: 30_000 });
-    await direct.click({ force: true });
-    console.log('Clicked: "Select custom distribution" (direct button)');
-    await distPage.waitForTimeout(1500);
-    await safeScreenshot(distPage, "storage/distribution-after-direct-select.png");
-    return;
-  }
+  // Card click fallback
+  const cardText = distPage.locator("text=/custom distribution/i").first();
+  await cardText.waitFor({ timeout: 30_000 });
+  await cardText.click({ force: true });
+  await sleep(500);
 
-  // 4) Path B: click the “Custom distribution” card/row/text (UI varies)
-  const customText = distPage.locator("text=/custom distribution/i").first();
-  if ((await customText.count()) > 0) {
-    await customText.waitFor({ state: "visible", timeout: 30_000 });
-    await customText.click({ force: true });
-    console.log('Clicked: "Custom distribution" (card/text)');
-    await distPage.waitForTimeout(800);
-  }
-
-  // 5) Path C: there is usually a generic Select / Continue after choosing the method
-  const nextBtn = distPage
-    .locator('button:has-text("Select"), button:has-text("Continue"), button:has-text("Next")')
-    .filter({ hasNotText: /select custom distribution/i })
+  const selectBtn = distPage
+    .locator('button:has-text("Select")')
+    .filter({ hasNotText: "Select custom distribution" })
     .first();
 
-  if ((await nextBtn.count()) > 0) {
-    await nextBtn.waitFor({ state: "visible", timeout: 30_000 });
-    await nextBtn.click({ force: true });
-    console.log('Clicked: "Select/Continue/Next" after choosing method');
-    await distPage.waitForTimeout(1500);
-  }
-
-  // 6) Confirm we landed on the custom distribution UI
-  if ((await distPage.locator("#PolarisTextField1").count()) === 0) {
-    await safeScreenshot(distPage, "storage/distribution-custom-not-reached.png");
-    throw new Error(
-      `Could not reach Custom distribution UI (missing #PolarisTextField1). URL: ${distPage.url()}`
-    );
-  }
-
-  console.log("Custom distribution UI reached.");
-  await safeScreenshot(distPage, "storage/distribution-custom-reached.png");
+  await selectBtn.waitFor({ timeout: 30_000 });
+  await selectBtn.click({ force: true });
+  await sleep(800);
+  console.log('Clicked: "Select" (after choosing custom distribution)');
 }
+
 async function fillDomainAndGenerateLink(distPage, store_domain) {
   await distPage.waitForSelector("#PolarisTextField1", { timeout: 60_000 });
   const domainInput = distPage.locator("#PolarisTextField1");
@@ -432,67 +327,40 @@ async function fillDomainAndGenerateLink(distPage, store_domain) {
   console.log("Domain typed value:", typed);
 
   if (typed.trim() !== store_domain) {
-    await safeScreenshot(distPage, "storage/domain-did-not-stick.png");
-    throw new Error(
-      `Domain did not stick. Expected "${store_domain}", got "${typed}". Screenshot: storage/domain-did-not-stick.png`
-    );
+    await safeScreenshot(distPage, "domain-did-not-stick.png");
+    throw new Error(`Domain did not stick. Expected "${store_domain}", got "${typed}"`);
   }
 
-  console.log("Filled store domain:", store_domain);
-
-  // Click Generate link (first click)
-  const genBtn = distPage
-    .locator('button:has-text("Generate link"), button:has-text("Generate")')
-    .first();
-
+  const genBtn = distPage.locator('button:has-text("Generate link"), button:has-text("Generate")').first();
   await genBtn.waitFor({ timeout: 30_000 });
   await genBtn.click({ force: true });
   console.log('Clicked: "Generate link" (first)');
   await sleep(800);
 
-  // Modal confirm "Generate link" (second click)
   const modal = distPage.locator('[role="dialog"], .Polaris-Modal-Dialog, .Polaris-Modal').first();
   if ((await modal.count()) > 0) {
-    const modalGen = modal
-      .locator('button:has-text("Generate link"), button:has-text("Generate")')
-      .first();
-
+    const modalGen = modal.locator('button:has-text("Generate link"), button:has-text("Generate")').first();
     await modalGen.waitFor({ timeout: 30_000 });
     await modalGen.click({ force: true });
     console.log('Clicked: "Generate link" (modal confirm)');
     await sleep(1200);
-  } else {
-    // fallback
-    const anySecond = distPage
-      .locator('button:has-text("Generate link"), button:has-text("Generate")')
-      .last();
-
-    if ((await anySecond.count()) > 0) {
-      await anySecond.click({ force: true });
-      console.log('Clicked: "Generate link" (fallback last)');
-      await sleep(1200);
-    }
   }
 
-  await safeScreenshot(distPage, "storage/distribution-after-generate.png");
+  await safeScreenshot(distPage, "distribution-after-generate.png");
   await sleep(900);
 
-  // Scrape install link:
+  // Scrape install link
   let link = "";
   try {
     link = (await distPage.getByRole("textbox", { name: /install link/i }).inputValue()).trim();
   } catch {}
 
-  // Fallback: any input containing admin.shopify.com + oauth/install_custom_app
   if (!link) {
     const inputs = distPage.locator("input");
     const n = await inputs.count();
     for (let i = 0; i < n; i++) {
       const v = (await inputs.nth(i).inputValue().catch(() => "")).trim();
-      if (
-        v.includes("admin.shopify.com") &&
-        (v.includes("/oauth/") || v.includes("install_custom_app"))
-      ) {
+      if (v.includes("admin.shopify.com") && (v.includes("/oauth/") || v.includes("install_custom_app"))) {
         link = v;
         break;
       }
@@ -514,10 +382,10 @@ export async function generateShopifyApp({ brand_name, store_domain }) {
   const dashboardId = dashboardIdFromUrl(dashboardUrl);
   const appName = `${brand_name} x Retention`;
 
-  // IMPORTANT: on Render/Docker, keep headless
   const browser = await chromium.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-dev-shm-usage"],
+    headless: process.env.PW_HEADED !== "1",
+    slowMo: process.env.PW_HEADED === "1" ? 150 : 0,
+    args: process.env.RENDER ? ["--no-sandbox", "--disable-dev-shm-usage"] : undefined,
   });
 
   const context = await browser.newContext({
@@ -531,7 +399,7 @@ export async function generateShopifyApp({ brand_name, store_domain }) {
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     console.log("URL now:", page.url());
 
-    // 2) Click "Create app" (first)
+    // 2) Click "Create app"
     const createApp = page.locator('text=/Create\\s+app/i').first();
     await createApp.waitFor({ timeout: 60_000 });
     await createApp.click({ force: true });
@@ -547,17 +415,14 @@ export async function generateShopifyApp({ brand_name, store_domain }) {
     await nameInput.fill("");
     await nameInput.type(appName, { delay: 20 });
 
-    // 4) Submit create form (SECOND button on /apps/new) — stable selector
-    const submitCreate = page
-      .locator('button[data-form-target="submit"][type="submit"]')
-      .first();
-
+    // 4) Submit create form
+    const submitCreate = page.locator('button[data-form-target="submit"][type="submit"]').first();
     await submitCreate.waitFor({ state: "attached", timeout: 120_000 });
     await submitCreate.scrollIntoViewIfNeeded();
     await submitCreate.click({ force: true });
     console.log('Clicked: Submit "Create"');
 
-    // 5) Success check: Shopify lands on /apps/<id>
+    // 5) Created app detail URL
     await page.waitForURL(/\/apps\/\d+/, { timeout: 120_000 });
     console.log("Created app detail URL:", page.url());
 
@@ -567,7 +432,7 @@ export async function generateShopifyApp({ brand_name, store_domain }) {
       throw new Error(`Create succeeded but couldn't parse appId from URL: ${page.url()}`);
     }
 
-    // 6) Configure version fields + Release + verify active version
+    // 6) Configure version fields + Release
     await configureVersionAndRelease(page, { appId, dashboardId });
 
     // 7) Settings: scrape Client ID/Secret
@@ -579,7 +444,7 @@ export async function generateShopifyApp({ brand_name, store_domain }) {
 
     const { clientId, clientSecret } = await scrapeClientIdAndSecret(page);
 
-    // 8) Distribution: open partners distribution URL in a new page
+    // 8) Distribution (Partners) — THIS IS WHERE 2FA BLOCKS IN HEADLESS
     const distributionUrl = `https://partners.shopify.com/${partnersId}/apps/${appId}/distribution`;
     console.log("Distribution page URL:", distributionUrl);
 
@@ -587,40 +452,26 @@ export async function generateShopifyApp({ brand_name, store_domain }) {
     await distPage.goto(distributionUrl, { waitUntil: "domcontentloaded" });
     console.log("Distribution page ACTUAL URL:", distPage.url());
 
-// Account chooser bounce
-if (distPage.url().includes("accounts.shopify.com/select")) {
-  await pickAccountIfNeeded(distPage, distributionUrl);
-}
+    // If Shopify sends us to accounts.shopify.com, it’s a login/2FA wall.
+    await assertNotBlockedBy2FA(distPage, "partners-distribution");
 
-if (!distPage.url().includes("partners.shopify.com")) {
-  await safeScreenshot(distPage, "storage/distribution-not-on-partners.png");
-  throw new Error(`Still not on partners distribution page. URL: ${distPage.url()}`);
-}
+    // If we got here, continue best-effort distribution link gen
+    await safeScreenshot(distPage, "distribution-before.png");
 
-console.log("On partners distribution page:", distPage.url());
-
-
-    console.log("Distribution page after chooser bypass:", distPage.url());
-
-    await safeScreenshot(distPage, "storage/distribution-before.png");
-
-    await safeScreenshot(distPage, "storage/distribution-before.png");
-
-    // 9) Select custom distribution
     await selectCustomDistribution(distPage);
     console.log("After selecting custom distribution, URL:", distPage.url());
-    await safeScreenshot(distPage, "storage/distribution-after-select.png");
+    await safeScreenshot(distPage, "distribution-after-select.png");
 
-    // 10) Fill domain + generate link + scrape
     const distributionLink = await fillDomainAndGenerateLink(distPage, store_domain);
-    await safeScreenshot(distPage, "storage/distribution-final.png");
+    await safeScreenshot(distPage, "distribution-final.png");
 
     return {
       app_name: appName,
       client_id: clean(clientId),
       client_secret: clean(clientSecret),
       distribution_link: clean(distributionLink),
-      note: "Created app + configured version + released + scraped Client ID/secret + generated distribution link.",
+      note:
+        "Created app + configured version + released + scraped Client ID/secret + generated distribution link (if not blocked by 2FA).",
       store_domain,
     };
   } finally {
