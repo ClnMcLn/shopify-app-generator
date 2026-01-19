@@ -1,14 +1,21 @@
 // src/lib/generateShopifyApp.js
 import { chromium } from "playwright";
 
-import fs from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
 
-function ensureStorageDir() {
-  const dir = path.resolve(process.cwd(), "storage");
-  fs.mkdirSync(dir, { recursive: true });
-  return dir;
+const STORAGE_DIR =
+  process.env.STORAGE_DIR ||
+  (process.env.RENDER ? "/app/storage" : path.join(process.cwd(), "storage"));
+
+async function ensureStorageDir() {
+  await fs.mkdir(STORAGE_DIR, { recursive: true });
 }
+
+function storagePath(filename) {
+  return path.join(STORAGE_DIR, filename);
+}
+
 
 /**
  * End-to-end Shopify Dev Dashboard -> create app -> configure version
@@ -52,16 +59,14 @@ function dashboardIdFromUrl(dashboardUrl) {
   return m ? m[1] : null;
 }
 
-async function safeScreenshot(page, fileName) {
+async function safeScreenshot(page, filename) {
   try {
-    const dir = ensureStorageDir();
-    const fullPath = path.join(dir, fileName.replace(/^storage\//, ""));
-    await page.screenshot({ path: fullPath, fullPage: true });
-    console.log("Saved screenshot:", fullPath);
-    return fullPath;
+    await ensureStorageDir();
+    const full = storagePath(filename.replace(/^storage\//, ""));
+    await page.screenshot({ path: full, fullPage: true });
+    console.log("Saved screenshot:", full);
   } catch (e) {
     console.log("Screenshot failed:", e?.message || e);
-    return null;
   }
 }
 
@@ -115,8 +120,14 @@ async function pickAccountIfNeeded(page, partnersDistributionUrl) {
     await page.waitForTimeout(2500);
   } else {
     await safeScreenshot(page, "account-chooser-no-options.png");
-    throw new Error(`Account chooser has no clickable options. URL: ${page.url()}`);
-  }
+// Detect Cloudflare challenge/interstitial
+const cur = page.url();
+if (cur.includes("__cf_chl_rt_tk") || cur.includes("cf_chl")) {
+  await safeScreenshot(page, "cloudflare-challenge.png");
+  throw new Error(
+    `Blocked by Cloudflare challenge on Shopify Accounts (cannot proceed headlessly on Render). URL: ${cur}`
+  );
+}  }
 
   // 2) Now go to distribution page (should work once chooser is satisfied)
   await page.goto(partnersDistributionUrl, { waitUntil: "domcontentloaded" });
