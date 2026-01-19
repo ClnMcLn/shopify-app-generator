@@ -90,7 +90,7 @@ async function pickAccountIfNeeded(page, partnersDistributionUrl) {
   if (!url.includes("accounts.shopify.com/select")) return;
 
   console.log("On account chooser — selecting account option", { url });
-  await safescreenshot(page, "account-chooser-arrived.png");
+  await safeScreenshot(page, "account-chooser-arrived.png");
   await page.waitForLoadState("domcontentloaded").catch(() => {});
   await page.waitForTimeout(1500);
 
@@ -109,12 +109,12 @@ async function pickAccountIfNeeded(page, partnersDistributionUrl) {
 
   if (await choice.count()) {
     await choice.waitFor({ state: "visible", timeout: 60_000 });
-    await safescreenshot(page, "account-chooser-before-click.png");
+    await safeScreenshot(page, "account-chooser-before-click.png");
     await choice.click({ force: true });
     console.log("Account chooser: clicked first account option");
     await page.waitForTimeout(2500);
   } else {
-    await safescreenshot(page, "account-chooser-no-options.png");
+    await safeScreenshot(page, "account-chooser-no-options.png");
     throw new Error(`Account chooser has no clickable options. URL: ${page.url()}`);
   }
 
@@ -124,7 +124,7 @@ async function pickAccountIfNeeded(page, partnersDistributionUrl) {
 
   const after = page.url();
   console.log("After chooser selection + goto distribution, URL:", after);
-  await safescreenshot(page, "account-chooser-after-click.png");
+  await safeScreenshot(page, "account-chooser-after-click.png");
 
   if (after.includes("accounts.shopify.com/select")) {
     throw new Error(`Still stuck on account chooser after clicking an option. URL: ${after}`);
@@ -282,10 +282,10 @@ async function configureVersionAndRelease(page, { appId, dashboardId }) {
 
   const disabled = await releaseBtn.isDisabled().catch(() => true);
   console.log("Release visible. Disabled?", disabled);
-  await safescreenshot(page, "before-release.png");
+  await safeScreenshot(page, "before-release.png");
 
   if (disabled) {
-    await safescreenshot(page, "release-disabled.png");
+    await safeScreenshot(page, "release-disabled.png");
     throw new Error('Release button is disabled (fields likely not valid / not saved).');
   }
 
@@ -323,7 +323,7 @@ const vScopes = (await page
 console.log("VERIFY (current page) app url:", vAppUrl);
 console.log("VERIFY (current page) scopes len:", vScopes.length);
 
-await safescreenshot(page, "verify-current-version.png");
+await safeScreenshot(page, "verify-current-version.png");
 }
 
 async function selectCustomDistribution(distPage) {
@@ -552,7 +552,7 @@ export async function generateShopifyApp({ brand_name, store_domain }) {
 
     const appId = extractAppId(page.url());
     if (!appId) {
-      await safescreenshot(page, "create-app-no-appid.png");
+      await safeScreenshot(page, "create-app-no-appid.png");
       throw new Error(`Create succeeded but couldn't parse appId from URL: ${page.url()}`);
     }
 
@@ -564,7 +564,7 @@ export async function generateShopifyApp({ brand_name, store_domain }) {
     await page.goto(settingsUrl, { waitUntil: "domcontentloaded" });
     await sleep(1200);
     console.log("Settings page URL:", page.url());
-    await safescreenshot(page, "app-settings.png");
+    await safeScreenshot(page, "app-settings.png");
 
     const { clientId, clientSecret } = await scrapeClientIdAndSecret(page);
 
