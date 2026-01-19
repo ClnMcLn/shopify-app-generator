@@ -70,29 +70,24 @@ async function waitForAnyURL(page, patterns, timeout = 30_000) {
 }
 
 async function pickAccountIfNeeded(page) {
-  // Shopify sometimes bounces to an account chooser
-  const url = page.url();
-  if (!url.includes("accounts.shopify.com/select")) return;
+  if (!page.url().includes("accounts.shopify.com/select")) return;
 
   console.log("On account chooser. Selecting account tile...");
+  await page.waitForLoadState("domcontentloaded");
+
+  // Try common tile roles first
   const tile = page
-    .getByRole("link", { name: /Client Success|clientsuccess@retention\.com/i })
+    .getByRole("link", { name: /clientsuccess@retention\.com|Client Success/i })
     .first();
 
-  try {
-    await tile.waitFor({ timeout: 30_000 });
+  if (await tile.count()) {
     await tile.click({ force: true });
     return;
-  } catch {}
+  }
 
-// Fallback: click first visible account tile (button OR link)
-const firstTile = page
-  .getByRole("button")
-  .or(page.getByRole("link"))
-  .first();
-
-await firstTile.waitFor({ timeout: 90_000 });
-await firstTile.click({ force: true });
+  const anyClickable = page.locator('a[href], button, [role="button"], [data-testid*="account"], [class*="account"]');
+  await anyClickable.first().waitFor({ state: "attached", timeout: 90_000 });
+  await anyClickable.first().click({ force: true });
 }
 
 async function scrapeClientIdAndSecret(settingsPage) {
@@ -257,18 +252,15 @@ async function configureVersionAndRelease(page, { appId, dashboardId }) {
   console.log('Clicked: "Release"');
   await page.waitForTimeout(800);
 
-  // Confirm modal ONLY if there is a modal with a "Release" button
-  const confirmModalBtn = page
-    .locator('[role="dialog"], .Polaris-Modal-Dialog, .Polaris-Modal')
-    .getByRole("button", { name: /^release$/i })
-    .first();
+// Confirm release: sometimes it's a modal, sometimes it's a second button on the page
+const confirmReleaseBtn = page
+  .getByRole("button", { name: /^release$/i })
+  .filter({ hasNotText: /create an app/i })
+  .last();
 
-  if ((await confirmModalBtn.count()) > 0) {
-    await confirmModalBtn.waitFor({ state: "visible", timeout: 10_000 });
-    await confirmModalBtn.click({ force: true });
-    console.log('Clicked: Confirm "Release" (modal)');
-  }
-
+await confirmReleaseBtn.waitFor({ state: "visible", timeout: 30_000 });
+await confirmReleaseBtn.click({ force: true });
+console.log('Clicked: Confirm "Release"');
   await page.waitForLoadState("networkidle").catch(() => {});
   await page.waitForTimeout(1200);
 
