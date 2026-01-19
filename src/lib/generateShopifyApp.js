@@ -545,11 +545,18 @@ async function generateShopifyApp({ brand_name, store_domain }) {
 
 
 
-   // Submit create form (the SECOND "Create app" on the /apps/new page)
-   const submitCreate = page.locator('button:has-text("Create app")').last();
-   await submitCreate.waitFor({ timeout: 30_000 });
-   await submitCreate.click({ force: true });
-   console.log("Submitted: Create app");
+// Submit create form (the SECOND "Create app" on the /apps/new page)
+await page.waitForURL(/\/apps\/new\b/, { timeout: 30_000 });
+
+// Shopify can render multiple "Create app" buttons; click the one in the form footer
+const submitCreate = page
+  .getByRole("button", { name: /^Create app$/i })
+  .filter({ hasNotText: /create an app/i }) // avoid header/banner variants if any
+  .last();
+
+await submitCreate.waitFor({ timeout: 120_000 });
+await submitCreate.click({ force: true });
+console.log("Submitted: Create app");
 
    // Success check = we landed on the new app detail page
    await page.waitForURL(/\/apps\/\d+/, { timeout: 60_000 });
