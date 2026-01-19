@@ -494,15 +494,17 @@ export async function generateShopifyApp({ brand_name, store_domain }) {
     await distPage.goto(distributionUrl, { waitUntil: "domcontentloaded" });
     console.log("Distribution page ACTUAL URL:", distPage.url());
 
-if (distPage.url().includes("accounts.shopify.com/select")) {
-  console.log("Chooser detected — forcing direct navigation to partners distribution");
-  await distPage.goto(distributionUrl, { waitUntil: "domcontentloaded" });
-  await distPage.waitForTimeout(2000);
-  console.log("After forced goto, URL:", distPage.url());
-}
+    if (distPage.url().includes("accounts.shopify.com/select")) {
+    console.log("Chooser detected — forcing direct navigation to partners distribution");
+    await distPage.goto(distributionUrl, { waitUntil: "domcontentloaded" });
+    await distPage.waitForTimeout(2000);
+    console.log("After forced goto, URL:", distPage.url());
+    }
 
 
-console.log("Distribution page after chooser bypass:", distPage.url());
+    console.log("Distribution page after chooser bypass:", distPage.url());
+
+    await safeScreenshot(distPage, "storage/distribution-before.png");
 
     await safeScreenshot(distPage, "storage/distribution-before.png");
 
