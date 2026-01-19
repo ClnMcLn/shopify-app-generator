@@ -73,11 +73,26 @@ async function pickAccountIfNeeded(page, partnersDistributionUrl) {
   const url = page.url();
   if (!url.includes("accounts.shopify.com/select")) return;
 
-  console.log("On account chooser — skipping UI and going direct to distribution", { url });
+  console.log("On account chooser — bypassing to partners distribution", { url });
   await safeScreenshot(page, "storage/account-chooser-arrived.png");
 
-  await page.goto(partnersDistributionUrl, { waitUntil: "domcontentloaded" });
-  await page.waitForTimeout(1500);
+  // Try a few times: sometimes Shopify keeps redirecting back to chooser
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    console.log(`Chooser bypass attempt ${attempt}: goto partners distribution`);
+    await page.goto(partnersDistributionUrl, { waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(2000);
+
+    const now = page.url();
+    console.log("After goto, URL:", now);
+    await safeScreenshot(page, `storage/account-chooser-bypass-attempt-${attempt}.png`);
+
+    if (now.includes("partners.shopify.com")) return;
+    if (!now.includes("accounts.shopify.com/select")) return; // some other redirect, let caller handle
+  }
+
+  throw new Error(
+    `Account chooser bypass failed; still on chooser after retries. Current: ${page.url()}`
+  );
 }
 
 async function scrapeClientIdAndSecret(settingsPage) {
@@ -525,12 +540,17 @@ export async function generateShopifyApp({ brand_name, store_domain }) {
     await distPage.goto(distributionUrl, { waitUntil: "domcontentloaded" });
     console.log("Distribution page ACTUAL URL:", distPage.url());
 
-    if (distPage.url().includes("accounts.shopify.com/select")) {
-    console.log("Chooser detected — forcing direct navigation to partners distribution");
-    await distPage.goto(distributionUrl, { waitUntil: "domcontentloaded" });
-    await distPage.waitForTimeout(2000);
-    console.log("After forced goto, URL:", distPage.url());
-    }
+// Account chooser bounce
+if (distPage.url().includes("accounts.shopify.com/select")) {
+  await pickAccountIfNeeded(distPage, distributionUrl);
+}
+
+if (!distPage.url().includes("partners.shopify.com")) {
+  await safeScreenshot(distPage, "storage/distribution-not-on-partners.png");
+  throw new Error(`Still not on partners distribution page. URL: ${distPage.url()}`);
+}
+
+console.log("On partners distribution page:", distPage.url());
 
 
     console.log("Distribution page after chooser bypass:", distPage.url());
