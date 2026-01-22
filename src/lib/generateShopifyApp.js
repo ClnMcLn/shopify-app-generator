@@ -1,7 +1,8 @@
 // src/lib/generateShopifyApp.js
 import { chromium } from "playwright";
-import fs from "node:fs/promises";
+import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 
 /**
  * End-to-end Shopify Dev Dashboard -> create app -> configure version
@@ -40,7 +41,15 @@ function storagePath(filename) {
   return path.join(STORAGE_DIR, filename);
 }
 
+function screenshotsEnabled() {
+  const v = String(process.env.ENABLE_SCREENSHOTS || "").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes" || v === "on";
+}
+
 async function safeScreenshot(page, filename) {
+  // Fast no-op unless explicitly enabled
+  if (!screenshotsEnabled()) return;
+
   try {
     await ensureStorageDir();
     const full = storagePath(filename.replace(/^storage\//, ""));
@@ -50,6 +59,7 @@ async function safeScreenshot(page, filename) {
     console.log("Screenshot failed:", e?.message || e);
   }
 }
+
 
 // -------- misc helpers --------
 function sleep(ms) {
@@ -510,9 +520,19 @@ export async function generateShopifyApp({ brand_name, store_domain }) {
     args: process.env.RENDER ? ["--no-sandbox", "--disable-dev-shm-usage"] : undefined,
   });
 
-  const context = await browser.newContext({
-    storageState: "storage/shopify-storage.json",
-  });
+
+function getStorageStatePath() {
+  const json = process.env.SHOPIFY_STORAGE_STATE_JSON?.trim();
+  if (!json) return "storage/shopify-storage.json"; // local dev fallback
+
+  const p = path.join(os.tmpdir(), "shopify-storage.json");
+  fs.writeFileSync(p, json, "utf8");
+  return p;
+}
+
+const context = await browser.newContext({
+  storageState: getStorageStatePath(),
+});
 
   const page = await context.newPage();
 
@@ -596,8 +616,10 @@ if (distPage.url().includes("accounts.shopify.com")) {
     console.log("Back on partners after 2FA:", distPage.url());
 
     // Save fresh storageState that includes Partners access
-    await context.storageState({ path: "storage/shopify-storage.json" });
-    console.log("Saved updated storageState with Partners auth");
+// Save fresh storageState that includes Partners access
+const statePath = getStorageStatePath();
+await context.storageState({ path: statePath });
+console.log("Saved updated storageState with Partners auth at:", statePath);
   } else {
     await assertNotBlockedBy2FA(distPage, "partners-distribution");
   }
