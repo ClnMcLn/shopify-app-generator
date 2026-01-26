@@ -558,6 +558,14 @@ const context = await browser.newContext({
     await nameInput.type(appName, { delay: 20 });
 
 // 4) Submit create form (Shopify UI changes often — try a few options)
+// 4) Submit create form (Shopify UI changes often — try a few options)
+const submitCreateCandidates = [
+  page.getByRole("button", { name: /^create$/i }).first(),
+  page.getByRole("button", { name: /create app/i }).first(),
+  page.locator('button[type="submit"]').first(),
+  page.locator('form button[type="submit"]').first(),
+];
+
 let submitCreate = null;
 
 for (const cand of submitCreateCandidates) {
@@ -578,8 +586,6 @@ if (!submitCreate) {
 await submitCreate.scrollIntoViewIfNeeded();
 await submitCreate.click({ force: true });
 console.log('Clicked: Submit "Create"');
-
-
 
     // 5) Created app detail URL
     await page.waitForURL(/\/apps\/\d+/, { timeout: 120_000 });
