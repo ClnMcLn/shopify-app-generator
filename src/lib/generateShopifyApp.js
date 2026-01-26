@@ -557,12 +557,29 @@ const context = await browser.newContext({
     await nameInput.fill("");
     await nameInput.type(appName, { delay: 20 });
 
-    // 4) Submit create form
-    const submitCreate = page.locator('button[data-form-target="submit"][type="submit"]').first();
-    await submitCreate.waitFor({ state: "attached", timeout: 120_000 });
-    await submitCreate.scrollIntoViewIfNeeded();
-    await submitCreate.click({ force: true });
-    console.log('Clicked: Submit "Create"');
+// 4) Submit create form (Shopify UI changes often — try a few options)
+let submitCreate = null;
+
+for (const cand of submitCreateCandidates) {
+  try {
+    if ((await cand.count()) === 0) continue;
+    await cand.waitFor({ state: "visible", timeout: 15_000 });
+    const disabled = await cand.isDisabled().catch(() => false);
+    if (disabled) continue;
+    submitCreate = cand;
+    break;
+  } catch {}
+}
+
+if (!submitCreate) {
+  throw new Error(`Could not find a visible/enabled Create submit button on: ${page.url()}`);
+}
+
+await submitCreate.scrollIntoViewIfNeeded();
+await submitCreate.click({ force: true });
+console.log('Clicked: Submit "Create"');
+
+
 
     // 5) Created app detail URL
     await page.waitForURL(/\/apps\/\d+/, { timeout: 120_000 });
