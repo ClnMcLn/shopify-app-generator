@@ -87,22 +87,24 @@ function domainInputLocator(page) {
     .first();
 
   // Polaris inputs often have ids like #PolarisTextField1, #PolarisTextField2, etc
-  const polarisId = page.locator('input[id^="PolarisTextField"], textarea[id^="PolarisTextField"]').first();
+  const polarisId = page
+    .locator('input[id^="PolarisTextField"], textarea[id^="PolarisTextField"]')
+    .first();
 
   // Fallback: placeholder-based
   const byPlaceholder = page
     .locator('input[placeholder*="myshopify" i], input[placeholder*="myshopify.com" i]')
     .first();
 
-  // Fallback: any input that looks like a domain entry near relevant text
-  const nearText = page
-    .locator('input')
-    .filter({ has: page.locator(':text("myshopify")') })
+  // NEW fallback: first visible textbox in main content
+  // (distribution form usually renders a single text field for the shop domain)
+  const anyMainTextbox = page
+    .locator('main input[type="text"], main input:not([type]), main textarea')
     .first();
 
-  // Return a locator that matches *any* of these
-  return byLabel.or(polarisId).or(byPlaceholder).or(nearText);
+  return byLabel.or(polarisId).or(byPlaceholder).or(anyMainTextbox);
 }
+
 
 // Detect the Shopify Accounts / 2FA wall (login page or account select)
 async function assertNotBlockedBy2FA(page, labelForLogs = "page") {
@@ -396,19 +398,32 @@ await Promise.race([
   }
 
   // Final assert: domain input must now exist
-  const finalDomain = domainInputLocator(distPage);
-  try {
-    await finalDomain.first().waitFor({ state: "visible", timeout: 60_000 });
-  } catch {
-    await safeScreenshot(distPage, "storage/custom-distribution-form-not-found.png");
-    throw new Error(
-      `Custom distribution form still not visible (no domain input). URL: ${distPage.url()}`
-    );
-  }
+const finalDomain = domainInputLocator(distPage);
 
-  console.log("Custom distribution form detected (domain input present).");
-  await safeScreenshot(distPage, "storage/custom-distribution-form-visible.png");
+// Retry a few times — Shopify often renders this form after an async fetch/animation
+let found = false;
+for (let attempt = 1; attempt <= 3; attempt++) {
+  try {
+    await distPage.waitForLoadState("domcontentloaded").catch(() => {});
+    await distPage.waitForTimeout(1000);
+
+    await finalDomain.first().waitFor({ state: "visible", timeout: 15_000 });
+    found = true;
+    break;
+  } catch {
+    console.log(`Custom distribution domain input not visible yet (attempt ${attempt}/3)`);
+  }
 }
+
+if (!found) {
+  await safeScreenshot(distPage, "storage/custom-distribution-form-not-found.png");
+  throw new Error(
+    `Custom distribution form still not visible (no domain input). URL: ${distPage.url()}`
+  );
+}
+
+console.log("Custom distribution form detected (domain input present).");
+await safeScreenshot(distPage, "storage/custom-distribution-form-visible.png");
 
 async function fillDomainAndGenerateLink(distPage, store_domain) {
 // Must be on partners distribution page
