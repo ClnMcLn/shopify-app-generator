@@ -424,6 +424,7 @@ if (!found) {
 
 console.log("Custom distribution form detected (domain input present).");
 await safeScreenshot(distPage, "storage/custom-distribution-form-visible.png");
+}
 
 async function fillDomainAndGenerateLink(distPage, store_domain) {
 // Must be on partners distribution page
