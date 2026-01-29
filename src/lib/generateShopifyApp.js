@@ -537,17 +537,28 @@ export async function generateShopifyApp({ brand_name, store_domain }) {
   });
 
 
-function getStorageStatePath() {
+function getStorageState() {
   const json = process.env.SHOPIFY_STORAGE_STATE_JSON?.trim();
-  if (!json) return "storage/shopify-storage.json"; // local dev fallback
 
-  const p = path.join(os.tmpdir(), "shopify-storage.json");
-  fs.writeFileSync(p, json, "utf8");
-  return p;
+  // Render/prod: env var is present -> parse and pass object directly to Playwright
+  if (json) {
+    try {
+      return JSON.parse(json);
+    } catch {
+      throw new Error("Invalid SHOPIFY_STORAGE_STATE_JSON (must be valid JSON)");
+    }
+  }
+
+  // Local dev fallback: use file if it exists
+  const localPath = "storage/shopify-storage.json";
+  if (fs.existsSync(localPath)) return localPath;
+
+  return undefined;
 }
 
+
 const context = await browser.newContext({
-  storageState: getStorageStatePath(),
+  storageState: getStorageState(),
 });
 
   const page = await context.newPage();
@@ -556,6 +567,12 @@ const context = await browser.newContext({
     // 1) Apps list
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     console.log("URL now:", page.url());
+    if (page.url().includes("accounts.shopify.com")) {
+    throw new Error(
+    `NEEDS_LOGIN: Redirected to Shopify Accounts on dev dashboard. Refresh storageState locally (PW_HEADED=1) and update SHOPIFY_STORAGE_STATE_JSON. URL: ${page.url()}`
+  );
+}
+
 
     // 2) Click "Create app"
     const createApp = page.locator('text=/Create\\s+app/i').first();
@@ -573,7 +590,6 @@ const context = await browser.newContext({
     await nameInput.fill("");
     await nameInput.type(appName, { delay: 20 });
 
-// 4) Submit create form (Shopify UI changes often — try a few options)
 // 4) Submit create form (Shopify UI changes often — try a few options)
 const submitCreateCandidates = [
   page.getByRole("button", { name: /^create$/i }).first(),
@@ -656,9 +672,10 @@ if (distPage.url().includes("accounts.shopify.com")) {
 
     // Save fresh storageState that includes Partners access
 // Save fresh storageState that includes Partners access
-const statePath = getStorageStatePath();
-await context.storageState({ path: statePath });
-console.log("Saved updated storageState with Partners auth at:", statePath);
+await ensureStorageDir();
+const savePath = storagePath("shopify-storage.json");
+await context.storageState({ path: savePath });
+console.log("Saved updated storageState with Partners auth at:", savePath);
   } else {
     await assertNotBlockedBy2FA(distPage, "partners-distribution");
   }
