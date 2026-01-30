@@ -141,6 +141,7 @@ async function assertNotBlockedBy2FA(page, labelForLogs = "page") {
 
 // -------- scraping helpers --------
 async function scrapeClientIdAndSecret(settingsPage) {
+  // ---- Client ID ----
   const idCandidates = [
     settingsPage.locator('input[id*="client_id" i]').first(),
     settingsPage.locator('input[name*="client_id" i]').first(),
@@ -158,34 +159,77 @@ async function scrapeClientIdAndSecret(settingsPage) {
     } catch {}
   }
 
-  // Reveal secret if needed
-  const reveal = settingsPage.getByRole("button", { name: /reveal/i }).first();
-  if ((await reveal.count()) > 0) {
-    try {
-      await reveal.click({ force: true });
-      await sleep(500);
-    } catch {}
-  }
-
-  const secretCandidates = [
-    settingsPage.locator('input[id*="client_secret" i]').first(),
-    settingsPage.locator('input[name*="client_secret" i]').first(),
-    settingsPage.locator('input:near(:text("Client secret"))').first(),
-    settingsPage.locator('code:near(:text("Client secret"))').first(),
-  ];
-
+  // ---- Secret (try to get shpss_ via copy buttons) ----
   let clientSecret = "";
-  for (const c of secretCandidates) {
-    try {
-      if ((await c.count()) === 0) continue;
-      const tag = (await c.evaluate((el) => el.tagName)).toLowerCase();
-      clientSecret = tag === "code" ? clean(await c.textContent()) : clean(await c.inputValue());
-      if (clientSecret) break;
-    } catch {}
+
+  // Install clipboard spy
+  await settingsPage.evaluate(() => {
+    window.__lastCopiedText = "";
+    const cb = navigator.clipboard;
+    if (!cb || cb.__spyInstalled) return;
+
+    cb.__spyInstalled = true;
+
+    const orig = cb.writeText?.bind(cb);
+    if (!orig) return;
+
+    cb.writeText = async (text) => {
+      window.__lastCopiedText = String(text ?? "");
+      return orig(text);
+    };
+  });
+
+  // Find ALL copy buttons
+  const copyButtons = settingsPage.locator('button[aria-label*="Copy" i]');
+  const n = await copyButtons.count().catch(() => 0);
+
+  for (let i = 0; i < n; i++) {
+    const btn = copyButtons.nth(i);
+
+    const aria = await btn.getAttribute("aria-label").catch(() => "");
+
+    await btn.click({ force: true }).catch(() => {});
+    await sleep(250);
+
+    const copied = await settingsPage
+      .evaluate(() => (window.__lastCopiedText || "").trim())
+      .catch(() => "");
+
+
+    if (/^shpss_/i.test(copied)) {
+      clientSecret = copied;
+      break;
+    }
   }
 
-  console.log("SCRAPED clientId length:", (clientId || "").length);
-  console.log("SCRAPED clientSecret length:", (clientSecret || "").length);
+  // Fallback: old OAuth client secret scraping (86 chars)
+  if (!clientSecret) {
+    console.log("DEBUG ❌ no copy button produced shpss_. Falling back to client_secret input scrape.");
+
+    const secretCandidates = [
+      settingsPage.locator('input[id*="client_secret" i]').first(),
+      settingsPage.locator('input[name*="client_secret" i]').first(),
+      settingsPage.locator('input:near(:text("Client secret"))').first(),
+      settingsPage.locator('code:near(:text("Client secret"))').first(),
+    ];
+
+    for (const c of secretCandidates) {
+      try {
+        if ((await c.count()) === 0) continue;
+        const tag = (await c.evaluate((el) => el.tagName)).toLowerCase();
+        const v = tag === "code" ? clean(await c.textContent()) : clean(await c.inputValue());
+        if (v) {
+          clientSecret = v;
+          break;
+        }
+      } catch {}
+    }
+
+  }
+
+console.log("SCRAPED clientId length:", clientId?.length || 0);
+console.log("SCRAPED clientSecret length:", clientSecret?.length || 0);
+
   return { clientId, clientSecret };
 }
 
@@ -584,28 +628,9 @@ export async function generateShopifyApp({ brand_name, store_domain }) {
   });
 
 
-function getStorageState() {
-  const json = process.env.SHOPIFY_STORAGE_STATE_JSON?.trim();
-
-  // Render/prod: env var is present -> parse and pass object directly to Playwright
-  if (json) {
-    try {
-      return JSON.parse(json);
-    } catch {
-      throw new Error("Invalid SHOPIFY_STORAGE_STATE_JSON (must be valid JSON)");
-    }
-  }
-
-  // Local dev fallback: use file if it exists
-  const localPath = "storage/shopify-storage.json";
-  if (fs.existsSync(localPath)) return localPath;
-
-  return undefined;
-}
-
-
 const context = await browser.newContext({
   storageState: getStorageState(),
+  permissions: ["clipboard-read", "clipboard-write"],
 });
 
   const page = await context.newPage();
