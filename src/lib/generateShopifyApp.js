@@ -81,28 +81,27 @@ function dashboardIdFromUrl(dashboardUrl) {
 }
 
 function domainInputLocator(page) {
-  // Prefer label-based selection first (most stable)
-  const byLabel = page
-    .getByRole("textbox", { name: /shopify domain|store domain|store url|domain/i })
-    .first();
+  // 1) Accessible label/name (best)
+  const byName = page.getByRole("textbox", {
+    name: /shopify domain|store domain|store url|domain/i,
+  }).first();
 
-  // Polaris inputs often have ids like #PolarisTextField1, #PolarisTextField2, etc
-  const polarisId = page
-    .locator('input[id^="PolarisTextField"], textarea[id^="PolarisTextField"]')
-    .first();
-
-  // Fallback: placeholder-based
+  // 2) Common placeholder
   const byPlaceholder = page
     .locator('input[placeholder*="myshopify" i], input[placeholder*="myshopify.com" i]')
     .first();
 
-  // NEW fallback: first visible textbox in main content
-  // (distribution form usually renders a single text field for the shop domain)
+  // 3) Polaris IDs often used on this screen
+  const polarisId = page
+    .locator('input[id^="PolarisTextField"], textarea[id^="PolarisTextField"]')
+    .first();
+
+  // 4) Last resort: first visible textbox inside main content
   const anyMainTextbox = page
     .locator('main input[type="text"], main input:not([type]), main textarea')
     .first();
 
-  return byLabel.or(polarisId).or(byPlaceholder).or(anyMainTextbox);
+  return byName.or(byPlaceholder).or(polarisId).or(anyMainTextbox);
 }
 
 
@@ -398,73 +397,103 @@ await Promise.race([
   }
 
   // Final assert: domain input must now exist
-const finalDomain = domainInputLocator(distPage);
+  const finalDomain = domainInputLocator(distPage);
 
-// Retry a few times — Shopify often renders this form after an async fetch/animation
-let found = false;
-for (let attempt = 1; attempt <= 3; attempt++) {
-  try {
-    await distPage.waitForLoadState("domcontentloaded").catch(() => {});
-    await distPage.waitForTimeout(1000);
+  let found = false;
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      // give Polaris time to render
+      await distPage.waitForLoadState("domcontentloaded").catch(() => {});
+      await distPage.waitForTimeout(1000);
 
-    await finalDomain.first().waitFor({ state: "visible", timeout: 15_000 });
-    found = true;
-    break;
-  } catch {
-    console.log(`Custom distribution domain input not visible yet (attempt ${attempt}/3)`);
+      await finalDomain.first().waitFor({ state: "visible", timeout: 12_000 });
+      found = true;
+      break;
+    } catch {
+      console.log(`Domain input not visible (attempt ${attempt}/4). Re-trying selection...`);
+
+      // Re-drive the selection flow each attempt
+      const customText = distPage.locator("text=/custom distribution/i").first();
+      if ((await customText.count()) > 0) {
+        await customText.click({ force: true }).catch(() => {});
+        await distPage.waitForTimeout(500);
+      }
+
+      const direct = distPage
+        .locator('button:has-text("Select custom distribution"), a:has-text("Select custom distribution")')
+        .first();
+      if ((await direct.count()) > 0) {
+        await direct.click({ force: true }).catch(() => {});
+        await distPage.waitForTimeout(800);
+      }
+
+      const nextBtn = distPage
+        .locator('button:has-text("Select"), button:has-text("Continue"), button:has-text("Next")')
+        .first();
+      if ((await nextBtn.count()) > 0) {
+        await nextBtn.click({ force: true }).catch(() => {});
+        await distPage.waitForTimeout(800);
+      }
+
+      // If a modal pops, confirm it
+      const modal2 = distPage.locator('[role="dialog"], .Polaris-ModalDialog, .Polaris-Modal').first();
+      if ((await modal2.count()) > 0) {
+        const confirm = modal2
+          .locator('button:has-text("Select"), button:has-text("Confirm"), button:has-text("Continue")')
+          .first();
+        if ((await confirm.count()) > 0) {
+          await confirm.click({ force: true }).catch(() => {});
+          await distPage.waitForTimeout(800);
+        }
+      }
+    }
   }
-}
 
-if (!found) {
-  await safeScreenshot(distPage, "storage/custom-distribution-form-not-found.png");
-  throw new Error(
-    `Custom distribution form still not visible (no domain input). URL: ${distPage.url()}`
-  );
-}
+  if (!found) {
+    throw new Error(
+      `Custom distribution form still not visible (no domain input). URL: ${distPage.url()}`
+    );
+  }
 
-console.log("Custom distribution form detected (domain input present).");
-await safeScreenshot(distPage, "storage/custom-distribution-form-visible.png");
-}
+  console.log("Custom distribution form detected (domain input present).");
+  await safeScreenshot(distPage, "storage/custom-distribution-form-visible.png");
+} // ✅ CLOSE selectCustomDistribution
+
 
 async function fillDomainAndGenerateLink(distPage, store_domain) {
-// Must be on partners distribution page
-if (!distPage.url().includes("/distribution")) {
-  await safeScreenshot(distPage, "storage/not-on-distribution.png");
-  throw new Error(`Not on partners distribution page. URL: ${distPage.url()}`);
-}
+  // Must be on partners distribution page
+  if (!distPage.url().includes("/distribution")) {
+    await safeScreenshot(distPage, "storage/not-on-distribution.png");
+    throw new Error(`Not on partners distribution page. URL: ${distPage.url()}`);
+  }
 
-// Give the page a moment to render
-await distPage.waitForLoadState("domcontentloaded").catch(() => {});
-await distPage.waitForTimeout(1000);
+  // Give the page a moment to render
+  await distPage.waitForLoadState("domcontentloaded").catch(() => {});
+  await distPage.waitForTimeout(1000);
 
-// Domain input selector (Shopify UI changes a lot) — try multiple strategies
-const domainCandidates = [
-  // Best: label-based (works if Shopify exposes it accessibly)
-  distPage.getByLabel(/shopify domain|store domain|domain/i).first(),
+  // Domain input selector (Shopify UI changes a lot) — try multiple strategies
+  const domainCandidates = [
+    distPage.getByLabel(/shopify domain|store domain|domain/i).first(),
+    distPage.locator('input[placeholder*="myshopify" i], input[placeholder*="myshopify.com" i]').first(),
+    distPage.locator('main input[type="text"], main input:not([type])').first(),
+  ];
 
-  // Placeholder-based (common for myshopify.com inputs)
-  distPage.locator('input[placeholder*="myshopify" i], input[placeholder*="myshopify.com" i]').first(),
+  let domainInput = null;
+  for (const cand of domainCandidates) {
+    try {
+      if ((await cand.count()) > 0) {
+        domainInput = cand;
+        break;
+      }
+    } catch {}
+  }
 
-  // Fallback: first visible text input in main content
-  distPage.locator('main input[type="text"], main input:not([type])').first(),
-];
+  if (!domainInput) {
+    await safeScreenshot(distPage, "storage/domain-input-not-found.png");
+    throw new Error(`Could not find domain input on distribution page. URL: ${distPage.url()}`);
+  }
 
-let domainInput = null;
-for (const cand of domainCandidates) {
-  try {
-    if ((await cand.count()) > 0) {
-      domainInput = cand;
-      break;
-    }
-  } catch {}
-}
-
-if (!domainInput) {
-  await safeScreenshot(distPage, "storage/domain-input-not-found.png");
-  throw new Error(`Could not find domain input on distribution page. URL: ${distPage.url()}`);
-}
-
-await domainInput.waitFor({ state: "visible", timeout: 60_000 });
+  await domainInput.waitFor({ state: "visible", timeout: 60_000 });
 
   await domainInput.scrollIntoViewIfNeeded();
   await domainInput.click({ force: true });
@@ -517,6 +546,24 @@ await domainInput.waitFor({ state: "visible", timeout: 60_000 });
 
   console.log("SCRAPED distributionLink length:", (link || "").length);
   return link;
+}
+
+
+// ✅ Put getStorageState at top-level (outside generateShopifyApp)
+function getStorageState() {
+  const json = process.env.SHOPIFY_STORAGE_STATE_JSON?.trim();
+  if (json) {
+    try {
+      return JSON.parse(json);
+    } catch {
+      throw new Error("Invalid SHOPIFY_STORAGE_STATE_JSON (must be valid JSON)");
+    }
+  }
+
+  const localPath = "storage/shopify-storage.json";
+  if (fs.existsSync(localPath)) return localPath;
+
+  return undefined;
 }
 
 export async function generateShopifyApp({ brand_name, store_domain }) {
@@ -573,6 +620,10 @@ if (page.url().includes("accounts.shopify.com")) {
     // Give you up to 10 minutes to complete login/2FA
     await page.waitForURL(/dev\.shopify\.com\/dashboard\//, { timeout: 10 * 60 * 1000 });
     console.log("Login complete. Current URL:", page.url());
+const savePath = "storage/shopify-storage.json";
+console.log("DEBUG saving storageState to:", savePath);
+await context.storageState({ path: savePath });
+console.log("Saved updated storageState at:", savePath);
   } else {
     throw new Error(
       `NEEDS_LOGIN: Redirected to Shopify Accounts on dev dashboard. Refresh storageState locally (PW_HEADED=1) and update SHOPIFY_STORAGE_STATE_JSON. URL: ${page.url()}`
@@ -677,12 +728,11 @@ if (distPage.url().includes("accounts.shopify.com")) {
 
     console.log("Back on partners after 2FA:", distPage.url());
 
-    // Save fresh storageState that includes Partners access
 // Save fresh storageState that includes Partners access
-await ensureStorageDir();
-const savePath = storagePath("shopify-storage.json");
+const savePath = "storage/shopify-storage.json"; // local canonical path
+console.log("DEBUG saving storageState to:", savePath);
 await context.storageState({ path: savePath });
-console.log("Saved updated storageState with Partners auth at:", savePath);
+console.log("Saved updated storageState at:", savePath);
   } else {
     await assertNotBlockedBy2FA(distPage, "partners-distribution");
   }
