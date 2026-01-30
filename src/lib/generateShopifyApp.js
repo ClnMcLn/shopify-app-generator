@@ -567,10 +567,17 @@ const context = await browser.newContext({
     // 1) Apps list
     await page.goto(dashboardUrl, { waitUntil: "domcontentloaded" });
     console.log("URL now:", page.url());
-    if (page.url().includes("accounts.shopify.com")) {
+if (page.url().includes("accounts.shopify.com")) {
+  if (process.env.PW_HEADED === "1") {
+    console.log("PW_HEADED=1: Waiting for manual login in the opened browser...");
+    // Give you up to 10 minutes to complete login/2FA
+    await page.waitForURL(/dev\.shopify\.com\/dashboard\//, { timeout: 10 * 60 * 1000 });
+    console.log("Login complete. Current URL:", page.url());
+  } else {
     throw new Error(
-    `NEEDS_LOGIN: Redirected to Shopify Accounts on dev dashboard. Refresh storageState locally (PW_HEADED=1) and update SHOPIFY_STORAGE_STATE_JSON. URL: ${page.url()}`
-  );
+      `NEEDS_LOGIN: Redirected to Shopify Accounts on dev dashboard. Refresh storageState locally (PW_HEADED=1) and update SHOPIFY_STORAGE_STATE_JSON. URL: ${page.url()}`
+    );
+  }
 }
 
 
